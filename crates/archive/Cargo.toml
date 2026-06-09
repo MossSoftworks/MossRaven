@@ -16,3 +16,8 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 directories = { workspace = true }
+
+# PoB import code = url-safe-base64(zlib(xml)). Used by the Tier-5 synthesis
+# pipeline to embed copy-pasteable import strings in Finalists.
+flate2 = "1"
+base64 = "0.22"

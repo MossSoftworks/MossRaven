@@ -54,6 +54,35 @@ pub struct Hypothesis {
     pub seed_pob_xml: Option<String>,
 }
 
+/// A curated finalist — Tier 5 output. Takes one ArchiveEntry's worth of stats
+/// and wraps it in the prose + tags the UI needs to render the build as a
+/// "this is why you'd play this" card. The `pob_import_code` is the
+/// URL-safe-base64'd, zlib-compressed XML the user pastes into PoB2 to
+/// open the build for real.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Finalist {
+    pub variant_id: String,
+    pub title: String,
+    pub one_liner: String,
+    pub why_it_works: String,
+    /// 2–5 short tags that describe the build's identity, e.g.
+    /// "cold DoT", "ES stacker", "boss-killer", "low-budget".
+    pub tags: Vec<String>,
+    /// The cell coords as a slash-string for grouping the UI.
+    pub cell: String,
+    /// Headline numbers cherry-picked from BuildStats — what to show in the
+    /// card without making the user click through.
+    pub key_stats: Vec<KeyStat>,
+    /// `~base64(zlib(pob_xml))` — paste into PoB2 Import.
+    pub pob_import_code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyStat {
+    pub label: String,
+    pub value: String,
+}
+
 #[async_trait]
 pub trait TierOneDriver: Send + Sync {
     async fn seed(&self, prompt: &str) -> Result<Hypothesis, DreamerError>;
@@ -61,6 +90,16 @@ pub trait TierOneDriver: Send + Sync {
         &self,
         archive_snapshot: &Value,
     ) -> Result<Hypothesis, DreamerError>;
+    /// Tier 5 — consume an archive frontier (already pruned to the best ~20
+    /// entries by Tier 4) and produce 5–10 curated, narrated finalists for the
+    /// UI's "play these" panel. Default impl returns NotImplemented so existing
+    /// drivers (ExternalMcpDriver, future test fakes) don't have to provide it.
+    async fn synthesize_finalists(
+        &self,
+        _frontier_snapshot: &Value,
+    ) -> Result<Vec<Finalist>, DreamerError> {
+        Err(DreamerError::NotImplemented)
+    }
 }
 
 /// Mode A — Anthropic Messages API driver.
@@ -192,6 +231,88 @@ impl TierOneDriver for AnthropicApiDriver {
         );
         let raw = self.message(system, &user).await?;
         Self::parse_hypothesis(&raw)
+    }
+
+    /// Tier 5: turn a frontier of scored entries into curated finalists.
+    ///
+    /// The frontier is a JSON array (whatever `get_frontier` produces) where
+    /// each entry has at least: `variant_id`, `cell`, `score`, `dps`, `ehp`,
+    /// `pob_import_code`, and the build's `origin_hypothesis` / `pob_xml`.
+    /// The driver returns 5–10 finalists with prose + headline stats; the UI
+    /// is already wired to render `Finalist`-shaped objects.
+    async fn synthesize_finalists(
+        &self,
+        frontier_snapshot: &Value,
+    ) -> Result<Vec<Finalist>, DreamerError> {
+        // Crank max_tokens for this single call — finalists need real prose,
+        // not the 1024-cap one-liners that seed/curate get away with.
+        let me = self.clone_with_max_tokens(4096);
+
+        let system = "You are a Path of Exile 2 build CURATOR. The search engine has produced \
+                      a frontier of mechanically-scored builds. Your job is to pick the 5–10 \
+                      most COMPELLING ones and explain — to a player who hasn't read the data — \
+                      WHY each is worth playing. \
+                      \n\nOutput ONLY valid JSON. No prose outside the JSON. No markdown fences. \
+                      Be ruthless about distinct identities — don't return two finalists that \
+                      play the same. Prefer variety across damage type, defense layer, role. \
+                      Borrow the `pob_import_code`, `variant_id`, and `cell` values from the \
+                      frontier entry you're describing — DO NOT invent new ones.";
+
+        let user = format!(
+            "Frontier (Tier 4 pruned, ready for curation):\n{}\n\n\
+             Return JSON of shape:\n\
+             {{\n  \"finalists\": [\n    {{\n      \"variant_id\": \"<copy from frontier>\",\n      \"title\": \"a short evocative name, like 'Cold DoT Tank Witch'\",\n      \"one_liner\": \"one sentence — what's the build do?\",\n      \"why_it_works\": \"2–4 sentences. Mechanical reasoning. Why this combo of skill/support/defense layer is good.\",\n      \"tags\": [\"cold\", \"DoT\", \"ES-stack\", \"boss-killer\"],\n      \"cell\": \"<copy from frontier>\",\n      \"key_stats\": [\n        {{\"label\": \"DPS\", \"value\": \"4.2M\"}},\n        {{\"label\": \"EHP\", \"value\": \"24k\"}},\n        {{\"label\": \"Resist\", \"value\": \"75/75/75\"}}\n      ],\n      \"pob_import_code\": \"<copy from frontier>\"\n    }}\n  ]\n}}",
+            serde_json::to_string_pretty(frontier_snapshot).unwrap_or_default(),
+        );
+
+        let raw = me.message(system, &user).await?;
+        Self::parse_finalists(&raw)
+    }
+}
+
+impl AnthropicApiDriver {
+    /// Internal: build a copy with a different max_tokens. We can't `clone`
+    /// reqwest::Client cheaply enough to justify a generic Clone impl, so this
+    /// is the explicit one-call escape hatch the synthesize step uses.
+    fn clone_with_max_tokens(&self, max_tokens: u32) -> Self {
+        Self {
+            model: self.model.clone(),
+            api_key: self.api_key.clone(),
+            max_tokens,
+            http: self.http.clone(),
+        }
+    }
+
+    fn parse_finalists(raw: &str) -> Result<Vec<Finalist>, DreamerError> {
+        let trimmed = raw.trim();
+        let inner = trimmed
+            .strip_prefix("```json")
+            .or_else(|| trimmed.strip_prefix("```"))
+            .map(|s| s.trim_start_matches('\n'))
+            .and_then(|s| s.rsplit_once("```").map(|(a, _)| a))
+            .unwrap_or(trimmed);
+        let v: Value = match serde_json::from_str(inner) {
+            Ok(v) => v,
+            Err(_) => {
+                let start = inner.find('{').ok_or_else(|| {
+                    DreamerError::Schema(format!("no JSON object in response: {raw}"))
+                })?;
+                serde_json::from_str(&inner[start..]).map_err(|e| {
+                    DreamerError::Schema(format!("JSON parse failed: {e} — {raw}"))
+                })?
+            }
+        };
+        let arr = v
+            .get("finalists")
+            .and_then(|f| f.as_array())
+            .ok_or_else(|| DreamerError::Schema(format!("no `finalists` array: {v}")))?;
+        let mut out = Vec::with_capacity(arr.len());
+        for entry in arr {
+            let f: Finalist = serde_json::from_value(entry.clone())
+                .map_err(|e| DreamerError::Schema(format!("finalist parse failed: {e}")))?;
+            out.push(f);
+        }
+        Ok(out)
     }
 }
 

@@ -95,6 +95,11 @@ pub fn control_surface_tools() -> Vec<ToolSchema> {
             description: "Pareto frontier across novelty × power × cost.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         },
+        ToolSchema {
+            name: "synthesize_finalists".into(),
+            description: "Tier 5 — Claude reads the current frontier and produces 5–10 narrated, curated finalists with paste-ready PoB import codes. Routes through the active Tier-1 driver (Mode A: AnthropicApiDriver; Mode B: external Claude Code).".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
     ]
 }
 
@@ -107,6 +112,14 @@ pub trait ControlSurface: Send + Sync {
     async fn read_archive(&self) -> Result<Value, McpError>;
     async fn inspect_cell(&self, coords: Value) -> Result<Value, McpError>;
     async fn get_frontier(&self) -> Result<Value, McpError>;
+    /// Tier 5 — turn the frontier into curated, narrated finalists. Default
+    /// impl is "ToolFailed: not implemented" so existing test surfaces don't
+    /// need to provide it.
+    async fn synthesize_finalists(&self) -> Result<Value, McpError> {
+        Err(McpError::ToolFailed(
+            "synthesize_finalists not implemented on this ControlSurface".into(),
+        ))
+    }
 }
 
 // ----- JSON-RPC 2.0 wire types -----
@@ -287,6 +300,7 @@ async fn call_tool<S: ControlSurface>(
         "read_archive" => surface.read_archive().await,
         "inspect_cell" => surface.inspect_cell(args).await,
         "get_frontier" => surface.get_frontier().await,
+        "synthesize_finalists" => surface.synthesize_finalists().await,
         other => Err(McpError::UnknownTool(other.to_string())),
     }
 }

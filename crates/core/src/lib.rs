@@ -25,6 +25,8 @@ use std::sync::Arc;
 use thiserror::Error;
 use tier3::Tier3Backend;
 
+pub mod mutate;
+
 #[derive(Debug, Error)]
 pub enum CoreError {
     #[error("tier-3 backend error: {0}")]
@@ -164,6 +166,21 @@ impl SearchEngine {
             })
             .collect();
         let pruned = proposed - survivors.len();
+
+        // 3b. Apply structured mutation ops to each survivor's seed XML.
+        // Until this step landed, every variant scored identically to the
+        // seed — same DPS, same EHP, same cell. apply_ops_to_xml mutates
+        // gem level/quality/swap on the survivor's pob_xml so Tier 3 sees
+        // a genuinely different build per variant.
+        let survivors: Vec<MutationProposal> = survivors
+            .into_iter()
+            .map(|mut p| {
+                if !p.ops.is_empty() {
+                    p.pob_xml = mutate::apply_ops_to_xml(&p.pob_xml, &p.ops);
+                }
+                p
+            })
+            .collect();
 
         // 4. Tier 3 score the survivors
         let batch: Vec<(String, String)> = survivors

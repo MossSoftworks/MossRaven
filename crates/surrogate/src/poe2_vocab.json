@@ -1,0 +1,937 @@
+{
+  "source": "HivemindOverlord/poe2-mcp",
+  "license": "MIT",
+  "game_version": "Path of Exile 2 Early Access 0.2.0-0.3.0",
+  "skills": [
+    {
+      "name": "Arc",
+      "element": "lightning",
+      "tags": [
+        "spell",
+        "projectile",
+        "lightning",
+        "chaining"
+      ]
+    },
+    {
+      "name": "Arctic Armour",
+      "element": "cold",
+      "tags": [
+        "spell",
+        "buff",
+        "persistent",
+        "cold",
+        "staged"
+      ]
+    },
+    {
+      "name": "Ball Lightning",
+      "element": "lightning",
+      "tags": [
+        "spell",
+        "projectile",
+        "lightning",
+        "aoe"
+      ]
+    },
+    {
+      "name": "Bone Blast",
+      "element": "physical",
+      "tags": [
+        "spell",
+        "aoe",
+        "physical",
+        "duration"
+      ]
+    },
+    {
+      "name": "Bone Cage",
+      "element": "physical",
+      "tags": [
+        "spell",
+        "aoe",
+        "physical"
+      ]
+    },
+    {
+      "name": "Bone Offering",
+      "element": "physical",
+      "tags": [
+        "spell",
+        "offering",
+        "minion",
+        "buff",
+        "aoe",
+        "physical",
+        "duration"
+      ]
+    },
+    {
+      "name": "Bonestorm",
+      "element": "physical",
+      "tags": [
+        "spell",
+        "aoe",
+        "projectile",
+        "physical",
+        "channeling"
+      ]
+    },
+    {
+      "name": "Chaos Bolt",
+      "element": "chaos",
+      "tags": [
+        "spell",
+        "projectile",
+        "chaos"
+      ]
+    },
+    {
+      "name": "Cold Snap",
+      "element": "cold",
+      "tags": [
+        "spell",
+        "aoe",
+        "cold",
+        "duration"
+      ]
+    },
+    {
+      "name": "Comet",
+      "element": "cold",
+      "tags": [
+        "spell",
+        "aoe",
+        "cold"
+      ]
+    },
+    {
+      "name": "Conductivity",
+      "element": "lightning",
+      "tags": [
+        "spell",
+        "aoe",
+        "lightning",
+        "duration",
+        "curse"
+      ]
+    },
+    {
+      "name": "Contagion",
+      "element": "chaos",
+      "tags": [
+        "spell",
+        "aoe",
+        "chaos",
+        "dot",
+        "duration"
+      ]
+    },
+    {
+      "name": "Despair",
+      "element": "chaos",
+      "tags": [
+        "spell",
+        "aoe",
+        "chaos",
+        "duration",
+        "curse"
+      ]
+    },
+    {
+      "name": "Detonate Dead",
+      "element": "physical/fire",
+      "tags": [
+        "spell",
+        "aoe",
+        "physical",
+        "fire",
+        "detonator"
+      ]
+    },
+    {
+      "name": "Elemental Expression",
+      "element": "fire/cold/lightning",
+      "tags": [
+        "spell",
+        "trigger",
+        "fire",
+        "cold",
+        "lightning"
+      ]
+    },
+    {
+      "name": "Elemental Weakness",
+      "element": "meta",
+      "tags": [
+        "spell",
+        "aoe",
+        "duration",
+        "curse"
+      ]
+    },
+    {
+      "name": "Ember Fusillade",
+      "element": "fire",
+      "tags": [
+        "spell",
+        "projectile",
+        "fire"
+      ]
+    },
+    {
+      "name": "Enfeeble",
+      "element": "meta",
+      "tags": [
+        "spell",
+        "aoe",
+        "duration",
+        "curse"
+      ]
+    },
+    {
+      "name": "Essence Drain",
+      "element": "chaos",
+      "tags": [
+        "spell",
+        "projectile",
+        "chaos",
+        "dot"
+      ]
+    },
+    {
+      "name": "Fire Trap",
+      "element": "fire",
+      "tags": [
+        "spell",
+        "duration",
+        "damage",
+        "aoe",
+        "fire"
+      ]
+    },
+    {
+      "name": "Fireball",
+      "element": "fire",
+      "tags": [
+        "spell",
+        "aoe",
+        "projectile",
+        "fire"
+      ]
+    },
+    {
+      "name": "Firestorm",
+      "element": "fire",
+      "tags": [
+        "spell",
+        "aoe",
+        "fire",
+        "duration"
+      ]
+    },
+    {
+      "name": "Flame Wall",
+      "element": "fire",
+      "tags": [
+        "spell",
+        "aoe",
+        "fire",
+        "duration"
+      ]
+    },
+    {
+      "name": "Flameblast",
+      "element": "fire",
+      "tags": [
+        "spell",
+        "aoe",
+        "fire",
+        "channeling"
+      ]
+    },
+    {
+      "name": "Flammability",
+      "element": "fire",
+      "tags": [
+        "spell",
+        "aoe",
+        "fire",
+        "duration",
+        "curse"
+      ]
+    },
+    {
+      "name": "Freezing Pulse",
+      "element": "cold",
+      "tags": [
+        "spell",
+        "projectile",
+        "cold"
+      ]
+    },
+    {
+      "name": "Frost Bomb",
+      "element": "cold",
+      "tags": [
+        "spell",
+        "aoe",
+        "cold",
+        "duration"
+      ]
+    },
+    {
+      "name": "Frostbolt",
+      "element": "cold",
+      "tags": [
+        "spell",
+        "projectile",
+        "aoe",
+        "cold"
+      ]
+    },
+    {
+      "name": "Glacial Cascade",
+      "element": "cold",
+      "tags": [
+        "attack",
+        "melee",
+        "aoe",
+        "cold"
+      ]
+    },
+    {
+      "name": "Herald of Ice",
+      "element": "cold",
+      "tags": [
+        "spell",
+        "buff",
+        "herald",
+        "cold"
+      ]
+    },
+    {
+      "name": "Ice Nova",
+      "element": "cold",
+      "tags": [
+        "spell",
+        "aoe",
+        "cold"
+      ]
+    },
+    {
+      "name": "Incinerate",
+      "element": "fire",
+      "tags": [
+        "spell",
+        "fire",
+        "channeling"
+      ]
+    },
+    {
+      "name": "Lightning Bolt",
+      "element": "lightning",
+      "tags": [
+        "spell",
+        "aoe",
+        "lightning"
+      ]
+    },
+    {
+      "name": "Lightning Conduit",
+      "element": "lightning",
+      "tags": [
+        "spell",
+        "aoe",
+        "lightning"
+      ]
+    },
+    {
+      "name": "Lightning Warp",
+      "element": "lightning",
+      "tags": [
+        "spell",
+        "aoe",
+        "lightning",
+        "duration"
+      ]
+    },
+    {
+      "name": "Mana Tempest",
+      "element": "lightning",
+      "tags": [
+        "spell",
+        "buff",
+        "lightning",
+        "empowerment"
+      ]
+    },
+    {
+      "name": "Orb of Storms",
+      "element": "lightning",
+      "tags": [
+        "spell",
+        "aoe",
+        "lightning",
+        "duration"
+      ]
+    },
+    {
+      "name": "Profane Ritual",
+      "element": "chaos",
+      "tags": [
+        "spell",
+        "aoe",
+        "chaos",
+        "dot",
+        "duration"
+      ]
+    },
+    {
+      "name": "Raise Zombie",
+      "element": "physical",
+      "tags": [
+        "spell",
+        "minion",
+        "duration"
+      ]
+    },
+    {
+      "name": "Rolling Magma",
+      "element": "fire",
+      "tags": [
+        "spell",
+        "projectile",
+        "fire",
+        "aoe"
+      ]
+    },
+    {
+      "name": "Sigil of Power",
+      "element": "meta",
+      "tags": [
+        "spell",
+        "aoe",
+        "buff"
+      ]
+    },
+    {
+      "name": "Soul Offering",
+      "element": "physical",
+      "tags": [
+        "spell",
+        "offering",
+        "minion",
+        "buff",
+        "physical"
+      ]
+    },
+    {
+      "name": "Spark",
+      "element": "lightning",
+      "tags": [
+        "spell",
+        "projectile",
+        "lightning"
+      ]
+    },
+    {
+      "name": "Storm Wave",
+      "element": "lightning",
+      "tags": [
+        "attack",
+        "aoe",
+        "lightning"
+      ]
+    },
+    {
+      "name": "Summon Skeletons",
+      "element": "physical",
+      "tags": [
+        "spell",
+        "minion",
+        "duration"
+      ]
+    },
+    {
+      "name": "Temporal Chains",
+      "element": "meta",
+      "tags": [
+        "spell",
+        "aoe",
+        "duration",
+        "curse"
+      ]
+    },
+    {
+      "name": "Unearth",
+      "element": "physical",
+      "tags": [
+        "spell",
+        "projectile",
+        "physical",
+        "minion"
+      ]
+    },
+    {
+      "name": "Vulnerability",
+      "element": "physical",
+      "tags": [
+        "spell",
+        "aoe",
+        "physical",
+        "duration",
+        "curse"
+      ]
+    }
+  ],
+  "supports": [
+    {
+      "name": "Added Cold Damage",
+      "tags": [
+        "Attack",
+        "Cold"
+      ],
+      "compatible_with": [
+        "attack"
+      ]
+    },
+    {
+      "name": "Added Fire Damage",
+      "tags": [
+        "Attack",
+        "Fire"
+      ],
+      "compatible_with": [
+        "attack"
+      ]
+    },
+    {
+      "name": "Added Lightning Damage",
+      "tags": [
+        "Attack",
+        "Lightning"
+      ],
+      "compatible_with": [
+        "attack"
+      ]
+    },
+    {
+      "name": "Ahn's Citadel",
+      "tags": [
+        "Wall",
+        "Fissure"
+      ],
+      "compatible_with": [
+        "wall_skills"
+      ]
+    },
+    {
+      "name": "Ailith's Chimes",
+      "tags": [
+        "Combo",
+        "Power Charge"
+      ],
+      "compatible_with": [
+        "combo_skills"
+      ]
+    },
+    {
+      "name": "Amanamu's Tithe",
+      "tags": [
+        "Minion",
+        "Abyssal"
+      ],
+      "compatible_with": [
+        "persistent_minion"
+      ]
+    },
+    {
+      "name": "Ancestral Call I",
+      "tags": [
+        "Attack",
+        "Melee",
+        "Strike"
+      ],
+      "compatible_with": [
+        "strike",
+        "melee"
+      ]
+    },
+    {
+      "name": "Arakaali's Lust",
+      "tags": [
+        "Poison"
+      ],
+      "compatible_with": [
+        "hits"
+      ]
+    },
+    {
+      "name": "Arbiter's Ignition",
+      "tags": [
+        "Fire",
+        "Spell"
+      ],
+      "compatible_with": [
+        "fire_spell"
+      ]
+    },
+    {
+      "name": "Archmage",
+      "tags": [
+        "Spell",
+        "Lightning",
+        "Spirit"
+      ],
+      "compatible_with": [
+        "spell_non_channelling"
+      ]
+    },
+    {
+      "name": "Arjun's Medal",
+      "tags": [
+        "Crossbow"
+      ],
+      "compatible_with": [
+        "crossbow"
+      ]
+    },
+    {
+      "name": "Atalui's Bloodletting",
+      "tags": [
+        "Life",
+        "Mana"
+      ],
+      "compatible_with": [
+        "any_skill"
+      ]
+    },
+    {
+      "name": "Atziri's Allure",
+      "tags": [
+        "Curse"
+      ],
+      "compatible_with": [
+        "curse"
+      ]
+    },
+    {
+      "name": "Brutality I",
+      "tags": [
+        "Physical"
+      ],
+      "compatible_with": [
+        "any_damage"
+      ]
+    },
+    {
+      "name": "Brutus' Brain",
+      "tags": [
+        "Minion"
+      ],
+      "compatible_with": [
+        "minion_skills"
+      ]
+    },
+    {
+      "name": "Chain I",
+      "tags": [
+        "Chaining",
+        "Projectile"
+      ],
+      "compatible_with": [
+        "projectile"
+      ]
+    },
+    {
+      "name": "Controlled Destruction",
+      "tags": [
+        "Critical",
+        "Spell"
+      ],
+      "compatible_with": [
+        "spell"
+      ]
+    },
+    {
+      "name": "Critical Damage",
+      "tags": [
+        "Critical"
+      ],
+      "compatible_with": [
+        "any_hit"
+      ]
+    },
+    {
+      "name": "Daresso's Passion",
+      "tags": [
+        "Banner"
+      ],
+      "compatible_with": [
+        "banner"
+      ]
+    },
+    {
+      "name": "Dialla's Desire",
+      "tags": [
+        "Quality",
+        "Level"
+      ],
+      "compatible_with": [
+        "any_with_levels"
+      ]
+    },
+    {
+      "name": "Doedre's Undoing",
+      "tags": [
+        "Curse",
+        "Chaos"
+      ],
+      "compatible_with": [
+        "curse"
+      ]
+    },
+    {
+      "name": "Einhar's Beastrite",
+      "tags": [
+        "Beast"
+      ],
+      "compatible_with": [
+        "unknown"
+      ]
+    },
+    {
+      "name": "Elemental Focus",
+      "tags": [
+        "Elemental"
+      ],
+      "compatible_with": [
+        "any_hit"
+      ]
+    },
+    {
+      "name": "Esh's Radiance",
+      "tags": [
+        "Chaos",
+        "Shock"
+      ],
+      "compatible_with": [
+        "damaging_hits"
+      ]
+    },
+    {
+      "name": "Faster Projectiles",
+      "tags": [
+        "Projectile"
+      ],
+      "compatible_with": [
+        "projectile"
+      ]
+    },
+    {
+      "name": "Fork",
+      "tags": [
+        "Projectile"
+      ],
+      "compatible_with": [
+        "projectile"
+      ]
+    },
+    {
+      "name": "Garukhan's Resolve",
+      "tags": [
+        "Attack",
+        "Movement"
+      ],
+      "compatible_with": [
+        "attack_unconditional"
+      ]
+    },
+    {
+      "name": "Inevitable Critical",
+      "tags": [
+        "Critical"
+      ],
+      "compatible_with": [
+        "any_hit"
+      ]
+    },
+    {
+      "name": "Ixchel's Torment",
+      "tags": [
+        "Trigger"
+      ],
+      "compatible_with": [
+        "trigger_skills"
+      ]
+    },
+    {
+      "name": "Kalisa's Crescendo",
+      "tags": [
+        "Unknown"
+      ],
+      "compatible_with": [
+        "unknown"
+      ]
+    },
+    {
+      "name": "Pierce I",
+      "tags": [
+        "Projectile"
+      ],
+      "compatible_with": [
+        "projectile"
+      ]
+    },
+    {
+      "name": "Piety's Mercy",
+      "tags": [
+        "Hit"
+      ],
+      "compatible_with": [
+        "damaging_hits"
+      ]
+    },
+    {
+      "name": "Projectile Acceleration I",
+      "tags": [
+        "Projectile"
+      ],
+      "compatible_with": [
+        "projectile"
+      ]
+    },
+    {
+      "name": "Projectile Acceleration II",
+      "tags": [
+        "Projectile"
+      ],
+      "compatible_with": [
+        "projectile"
+      ]
+    },
+    {
+      "name": "Rakiata's Flow",
+      "tags": [
+        "Elemental",
+        "Resistance"
+      ],
+      "compatible_with": [
+        "damaging_hits"
+      ]
+    },
+    {
+      "name": "Ratha's Assault",
+      "tags": [
+        "Unknown"
+      ],
+      "compatible_with": [
+        "unknown"
+      ]
+    },
+    {
+      "name": "Ricochet I",
+      "tags": [
+        "Projectile"
+      ],
+      "compatible_with": [
+        "projectile"
+      ]
+    },
+    {
+      "name": "Ricochet III",
+      "tags": [
+        "Projectile"
+      ],
+      "compatible_with": [
+        "projectile"
+      ]
+    },
+    {
+      "name": "Romira's Requital",
+      "tags": [
+        "Unknown"
+      ],
+      "compatible_with": [
+        "unknown"
+      ]
+    },
+    {
+      "name": "Sione's Temper",
+      "tags": [
+        "Unknown"
+      ],
+      "compatible_with": [
+        "unknown"
+      ]
+    },
+    {
+      "name": "Slower Projectiles",
+      "tags": [
+        "Projectile"
+      ],
+      "compatible_with": [
+        "projectile"
+      ]
+    },
+    {
+      "name": "Spell Echo",
+      "tags": [
+        "Spell",
+        "AoE"
+      ],
+      "compatible_with": [
+        "spell"
+      ]
+    },
+    {
+      "name": "Tecrod's Revenge",
+      "tags": [
+        "Unknown"
+      ],
+      "compatible_with": [
+        "unknown"
+      ]
+    },
+    {
+      "name": "Unleash",
+      "tags": [
+        "Spell"
+      ],
+      "compatible_with": [
+        "spell"
+      ]
+    },
+    {
+      "name": "Uruk's Smelting",
+      "tags": [
+        "Physical",
+        "Armour Break"
+      ],
+      "compatible_with": [
+        "physical_damage"
+      ]
+    },
+    {
+      "name": "Vilenta's Propulsion",
+      "tags": [
+        "Spell",
+        "Projectile"
+      ],
+      "compatible_with": [
+        "spell_projectile"
+      ]
+    },
+    {
+      "name": "Zarokh's Refrain",
+      "tags": [
+        "Spell",
+        "Echo"
+      ],
+      "compatible_with": [
+        "spell_aoe"
+      ]
+    }
+  ]
+}

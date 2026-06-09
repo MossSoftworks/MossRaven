@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
 
+pub mod vocab;
+
 #[derive(Debug, Error)]
 pub enum SurrogateError {
     #[error("http error: {0}")]
@@ -39,6 +41,24 @@ pub struct CandidateScore {
     pub note: Option<String>,
 }
 
+/// Structured mutation operations. The cascade applies these in-order to the
+/// seed PoB XML before Tier 3 scoring, so each variant gets a uniquely-mutated
+/// XML → unique BuildStats → real cell-coords diversity in the archive.
+///
+/// v1: gem-attribute mutations (level/quality/swap). These are XML-rewriteable
+/// without touching PoB's Lua API. Future ops (item swap, passive allocation)
+/// will route through `PobParser::apply_mutations` for PoB-side validation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum MutationOp {
+    /// Set the `level` attribute on the first `<Gem>` whose `nameSpec` matches.
+    SetGemLevel { gem: String, level: u32 },
+    /// Set the `quality` attribute on the first `<Gem>` whose `nameSpec` matches.
+    SetGemQuality { gem: String, quality: u32 },
+    /// Replace the first `nameSpec="OLD"` with `nameSpec="NEW"` — swaps the gem.
+    SwapGem { old: String, new: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MutationProposal {
     pub variant_id: String,
@@ -50,6 +70,11 @@ pub struct MutationProposal {
     /// without having to infer all axes from BuildStats alone.
     #[serde(default)]
     pub cell_focus: Option<String>,
+    /// Structured mutation operations to apply to the seed XML before Tier 3
+    /// scores this variant. Empty = no XML changes, variant scores identically
+    /// to seed.
+    #[serde(default)]
+    pub ops: Vec<MutationOp>,
 }
 
 #[async_trait]
@@ -197,13 +222,30 @@ impl SurrogateProvider for OpenAiCompatSurrogate {
         seed_hypothesis: &str,
         count: usize,
     ) -> Result<Vec<MutationProposal>, SurrogateError> {
-        let system = "You are a Path of Exile 2 build-mutation generator. \
-                      Output ONLY valid JSON. No prose, no markdown fences. \
-                      Each mutation is a single targeted tweak to the seed build (gem swap, \
-                      passive reshuffle, gear-mod change, scaling-vector pivot). \
-                      The PoB XML you receive is the current state; you do not need to return \
-                      full XML — just describe the mutation in the 'mutation' field. \
-                      The orchestrator will apply mutations to the seed XML separately.";
+        // Vocab block is datamined (HivemindOverlord/poe2-mcp) and embedded
+        // into the binary at compile time — no I/O at request time. See
+        // crates/surrogate/src/vocab.rs for the loader.
+        let vocab_block = vocab::prompt_block(200, 200);
+        let system = format!(
+            "You are a Path of Exile 2 (NOT Path of Exile 1) build-mutation generator. \
+             \n\nCRITICAL: This is POE 2 (early access v0.3+). Do NOT reference any of these \
+             PoE1-only concepts (they do not exist in PoE2): Vaal skills (Vaal Cold Snap, \
+             Vaal Fireball, etc.), 'Increased Critical Strikes' / 'Increased Critical Damage' \
+             support gems (PoE1 names), 'Elemental Focus' support gem, Watcher's Eye, \
+             Headhunter, The Pandemonius, Shaper/Elder influences, Cluster Jewels, \
+             Aura Reservation Efficiency support, Spirit Burst Barrage.\n\n\
+             Use ONLY skill and support gem names from this datamined list. If you don't \
+             see a name in this list, describe the EFFECT abstractly (e.g. \"a cold-conversion \
+             support gem\") rather than inventing a PoE1 name.\n\n\
+             {vocab_block}\n\
+             \n\
+             Output ONLY valid JSON. No prose, no markdown fences. \
+             Each mutation is a single targeted tweak to the seed build (gem swap, \
+             passive reshuffle, gear-mod change, scaling-vector pivot). \
+             The PoB XML you receive is the current state; you do not need to return \
+             full XML — just describe the mutation in the 'mutation' field. \
+             The orchestrator will apply mutations to the seed XML separately.",
+        );
         let user = format!(
             "Seed hypothesis: {seed_hypothesis}\n\n\
              Current PoB XML (truncated to first 2000 chars):\n{xml}\n\n\
@@ -216,13 +258,21 @@ impl SurrogateProvider for OpenAiCompatSurrogate {
                defense_layer  ∈ evasion | armour | es | hybrid | block-spell | dodge-roll\n\
                role           ∈ clear | boss | hybrid\n\
                scaling_vector ∈ gem-levels | attribute-stack | unique-driven | tree-keystone\n\n\
+             For each mutation, ALSO return a `ops` array of STRUCTURED ops that the engine will\n\
+             actually apply to the PoB XML. Each op is one of:\n\
+               {{\"op\":\"set_gem_level\", \"gem\":\"Whirling Slash\", \"level\":18}}\n\
+               {{\"op\":\"set_gem_quality\", \"gem\":\"Whirling Slash\", \"quality\":20}}\n\
+               {{\"op\":\"swap_gem\", \"old\":\"Inspiration\", \"new\":\"Frigid Bond\"}}\n\
+             The `gem`/`old`/`new` strings must match the `nameSpec` attribute on a `<Gem>` element\n\
+             in the PoB XML. If you can't express the mutation as ops, return [] for ops (the engine\n\
+             will still record the description but the build won't actually differ from the seed).\n\n\
              Return JSON of shape:\n\
-             {{\n  \"mutations\": [\n    {{ \"variant_id\": \"m1\", \"mutation\": \"swap support gem X for Y\", \"cell_focus\": \"cold/es/boss/unique-driven\" }},\n    ...\n  ]\n}}",
+             {{\n  \"mutations\": [\n    {{ \"variant_id\": \"m1\", \"mutation\": \"swap support gem Inspiration for Frigid Bond\", \"cell_focus\": \"cold/es/boss/unique-driven\", \"ops\": [{{\"op\":\"swap_gem\",\"old\":\"Inspiration\",\"new\":\"Frigid Bond\"}}] }},\n    ...\n  ]\n}}",
             xml = &seed_pob_xml[..seed_pob_xml.len().min(2000)],
             count = count,
         );
 
-        let raw = self.chat(system, &user).await?;
+        let raw = self.chat(&system, &user).await?;
         let parsed = Self::extract_json(&raw)
             .ok_or_else(|| SurrogateError::Schema(format!("no JSON in response: {raw}")))?;
         let arr = parsed
@@ -236,14 +286,23 @@ impl SurrogateProvider for OpenAiCompatSurrogate {
                 let variant_id = m.get("variant_id").and_then(|v| v.as_str())?.to_string();
                 let mutation = m.get("mutation").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let cell_focus = m.get("cell_focus").and_then(|v| v.as_str()).map(String::from);
+                // Parse structured ops if the model provided them. Each op is
+                // {"op": "set_gem_level"|"set_gem_quality"|"swap_gem", ...args}.
+                let ops: Vec<MutationOp> = m
+                    .get("ops")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|op| serde_json::from_value::<MutationOp>(op.clone()).ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 Some(MutationProposal {
                     variant_id,
-                    // v1: we don't yet rewrite the XML on the surrogate side; pass the seed
-                    // along with the mutation note in origin_hypothesis. Tier 3 will eventually
-                    // get a small mutation-applier that operates on the spec, not raw XML.
                     pob_xml: seed_pob_xml.to_string(),
                     origin_hypothesis: Some(mutation),
                     cell_focus,
+                    ops,
                 })
             })
             .collect())
@@ -328,11 +387,30 @@ impl SurrogateProvider for MockSurrogate {
             "physical/armour/boss/unique-driven",
         ];
         Ok((0..count)
-            .map(|i| MutationProposal {
-                variant_id: format!("mock-{i}"),
-                pob_xml: seed_pob_xml.to_string(),
-                origin_hypothesis: Some(format!("mock mutation #{i}")),
-                cell_focus: Some(cells[i % cells.len()].to_string()),
+            .map(|i| {
+                // Each mock variant gets a different gem-level mutation on the seed's
+                // first gem. The variant_id determines the level deterministically,
+                // so successive runs produce repeatable diversity. PoB rescores each
+                // mutated XML differently → cells fill with actually-distinct stats.
+                let level = (3 + (i as u32 * 2) % 18) + 1; // 4, 6, 8, ..., 20
+                MutationProposal {
+                    variant_id: format!("mock-{i}"),
+                    pob_xml: seed_pob_xml.to_string(),
+                    origin_hypothesis: Some(format!(
+                        "mock mutation #{i} — set primary gem level to {level}"
+                    )),
+                    cell_focus: Some(cells[i % cells.len()].to_string()),
+                    ops: vec![
+                        // Set level on whatever the first gem is. For the Ritualist
+                        // seed.xml that's "Whirling Slash"; for other seeds it picks
+                        // up whatever PoB has as the first <Gem> element. Using a
+                        // wildcard-ish approach: SetGemLevel matches "*" → "first gem".
+                        MutationOp::SetGemLevel {
+                            gem: "*".to_string(),
+                            level,
+                        },
+                    ],
+                }
             })
             .collect())
     }

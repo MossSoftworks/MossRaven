@@ -100,6 +100,17 @@ public sealed class McpServiceClient : IDisposable
     public Task<string> ReadArchiveAsync(CancellationToken ct = default)
         => CallToolAsync("read_archive", JsonSerializer.SerializeToElement(new { }), ct);
 
+    public Task<string> GetFrontierAsync(CancellationToken ct = default)
+        => CallToolAsync("get_frontier", JsonSerializer.SerializeToElement(new { }), ct);
+
+    /// <summary>
+    /// Tier 5 — Claude reads the current frontier and produces 5–10 narrated
+    /// finalists. Returns the JSON payload (the same shape the FileSystemWatcher
+    /// path would produce); the WPF caller parses `finalists[]` directly.
+    /// </summary>
+    public Task<string> SynthesizeFinalistsAsync(CancellationToken ct = default)
+        => CallToolAsync("synthesize_finalists", JsonSerializer.SerializeToElement(new { }), ct);
+
     private async Task<string> CallToolAsync(string tool, JsonElement args, CancellationToken ct)
     {
         if (_proc?.StandardInput is null)

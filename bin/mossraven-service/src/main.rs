@@ -29,6 +29,14 @@ struct Args {
     concept: Option<String>,
     generations: u32,
     pob_path: Option<String>,
+    /// One-shot MCP tool call. The service initializes the engine, runs the
+    /// named tool against ServiceControlSurface, prints the JSON result to
+    /// stdout, and exits. Lets external scripts (bash, python, claude code,
+    /// or me — invoking it via Bash tool) drive the engine without going
+    /// through the JSON-RPC stdio framer.
+    tool: Option<String>,
+    /// JSON object containing the tool's arguments. Default: `{}`.
+    tool_args: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -47,11 +55,21 @@ fn parse_args() -> Args {
                 }
             }
             "--pob-path" => out.pob_path = it.next(),
+            "--tool" => out.tool = it.next(),
+            "--tool-args" => out.tool_args = it.next(),
             "--help" | "-h" => {
                 println!(
                     "mossraven-service v{}\n\nUSAGE:\n    \
                      mossraven-service              # daemon (MCP server on stdio)\n    \
-                     mossraven-service --headless [--concept TEXT] [--generations N] [--pob-path PATH]\n\n\
+                     mossraven-service --headless [--concept TEXT] [--generations N]\n    \
+                     mossraven-service --tool NAME [--tool-args JSON]   # one-shot tool call\n\n\
+                     TOOLS:\n    \
+                     seed_hypothesis  args: {{\"concept\": \"...\"}}\n    \
+                     run_search       args: {{\"generations\": N, \"region\": \"...\"}}\n    \
+                     read_archive     args: {{}}\n    \
+                     inspect_cell     args: {{\"damage_type\": \"...\", \"defense_layer\": \"...\", ...}}\n    \
+                     get_frontier     args: {{}}\n    \
+                     synthesize_finalists args: {{}}  # Tier 5: Claude curates frontier → narrated finalists\n\n\
                      ENV:\n    \
                      MOSSRAVEN_POB_PATH               PoB2 checkout (default: vendor/PathOfBuilding-PoE2)\n    \
                      MOSSRAVEN_ARCHIVE_PATH           Override archive.json location\n    \
@@ -90,10 +108,63 @@ async fn main() -> anyhow::Result<()> {
 
     let pob_path = resolve_pob_path(args.pob_path.as_deref());
 
+    if let Some(tool) = args.tool.clone() {
+        let tool_args = args.tool_args.clone().unwrap_or_else(|| "{}".to_string());
+        return run_tool_call(&tool, &tool_args, &pob_path).await;
+    }
     if args.headless {
         return run_headless(&args, &pob_path).await;
     }
     run_daemon(&pob_path).await
+}
+
+// ----- One-shot tool call (CLI) -----
+
+async fn run_tool_call(tool: &str, args_json: &str, pob_path: &str) -> anyhow::Result<()> {
+    tracing::info!(tool, args = %args_json, "mossraven-service --tool (one-shot)");
+
+    let ctx = Arc::new(build_context(pob_path).await);
+
+    let args: Value = serde_json::from_str(args_json)
+        .map_err(|e| anyhow::anyhow!("--tool-args is not valid JSON: {e}"))?;
+
+    let surface = ServiceControlSurface { ctx: ctx.clone() };
+
+    let result = match tool {
+        "seed_hypothesis" => {
+            let concept = args
+                .get("concept")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("seed_hypothesis: missing 'concept'"))?;
+            surface.seed_hypothesis(concept).await
+        }
+        "run_search" => {
+            let generations = args
+                .get("generations")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10) as u32;
+            let region = args
+                .get("region")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            surface.run_search(generations, region).await
+        }
+        "read_archive" => surface.read_archive().await,
+        "inspect_cell" => surface.inspect_cell(args).await,
+        "get_frontier" => surface.get_frontier().await,
+        "synthesize_finalists" => surface.synthesize_finalists().await,
+        other => return Err(anyhow::anyhow!("unknown tool: {other}")),
+    };
+
+    // Persist archive on the way out (run_search already does it; this catches
+    // the case where seed/inspect/etc. ran first).
+    if let Err(e) = ctx.archive.save(&ctx.archive_path) {
+        tracing::warn!(error = %e, "archive save failed");
+    }
+
+    let value = result.map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
 }
 
 /// Find the PoB2 checkout. CWD-relative breaks when the WPF shell launches
@@ -139,16 +210,47 @@ fn resolve_pob_path(cli_override: Option<&str>) -> String {
 struct Context {
     archive: Arc<Archive>,
     archive_path: std::path::PathBuf,
+    /// session.json path next to archive.json. Persists the active hypothesis
+    /// across separate `--tool` process invocations so a `seed_hypothesis`
+    /// call followed by a `run_search` call (each its own process) operates
+    /// on the same engine state.
+    session_path: std::path::PathBuf,
     engine: SearchEngine,
     dreamer: Arc<dyn TierOneDriver>,
     surrogate_active: bool,
-    /// In-memory cache of the last hypothesis seeded — used as the concept
-    /// label on subsequent run_search calls and for prompt-sampler diversity.
     last_hypothesis: Mutex<Option<mossraven_dreamer::Hypothesis>>,
-    /// Fallback seed PoB XML loaded from disk at startup. When seed_hypothesis
-    /// runs without a Tier-1 driver returning its own XML, this is what the
-    /// engine mutates from.
     default_seed_xml: Option<String>,
+}
+
+/// Sticky engine state — what the engine is currently mutating from.
+/// Loaded on startup, written after every set_state.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct SessionState {
+    concept: String,
+    rationale: Option<String>,
+    initial_cell_focus: Option<String>,
+    seed_pob_xml: String,
+}
+
+impl SessionState {
+    fn load(path: &std::path::Path) -> Option<Self> {
+        match std::fs::read_to_string(path) {
+            Ok(s) => serde_json::from_str(&s).ok(),
+            Err(_) => None,
+        }
+    }
+    fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap())?;
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
 }
 
 async fn build_context(pob_path: &str) -> Context {
@@ -172,6 +274,10 @@ async fn build_context(pob_path: &str) -> Context {
     let archive_path = std::env::var("MOSSRAVEN_ARCHIVE_PATH")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| Archive::default_path());
+    let session_path = archive_path
+        .parent()
+        .map(|p| p.join("session.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("session.json"));
     let archive = match Archive::load(&archive_path) {
         Ok(a) => Arc::new(a),
         Err(e) => {
@@ -284,9 +390,29 @@ async fn build_context(pob_path: &str) -> Context {
         );
     }
 
+    // Restore previously-seeded session state if present. Lets `--tool
+    // seed_hypothesis` from one invocation persist into the next `--tool
+    // run_search` invocation across process boundaries.
+    if let Some(session) = SessionState::load(&session_path) {
+        tracing::info!(
+            path = ?session_path,
+            concept = %session.concept,
+            "session state restored — engine seeded from prior invocation"
+        );
+        engine.set_state(
+            session.concept,
+            session.rationale,
+            session.initial_cell_focus,
+            session.seed_pob_xml,
+        );
+    } else {
+        tracing::debug!(?session_path, "no session state on disk (clean slate)");
+    }
+
     Context {
         archive,
         archive_path,
+        session_path,
         engine,
         dreamer,
         surrogate_active,
@@ -450,8 +576,19 @@ impl ControlSurface for ServiceControlSurface {
             hypothesis.concept.clone(),
             hypothesis.rationale.clone(),
             hypothesis.initial_cell_focus.clone(),
-            seed_xml,
+            seed_xml.clone(),
         );
+        // Persist session so a subsequent --tool run_search invocation
+        // (separate process) restores the engine from this hypothesis.
+        let session = SessionState {
+            concept: hypothesis.concept.clone(),
+            rationale: hypothesis.rationale.clone(),
+            initial_cell_focus: hypothesis.initial_cell_focus.clone(),
+            seed_pob_xml: seed_xml,
+        };
+        if let Err(e) = session.save(&self.ctx.session_path) {
+            tracing::warn!(error = %e, "session state save failed");
+        }
         Ok(serde_json::to_value(hypothesis).unwrap())
     }
 
@@ -524,11 +661,56 @@ impl ControlSurface for ServiceControlSurface {
         Ok(json!({
             "frontier": snap.into_iter().take(10).map(|(coords, entry)| json!({
                 "coords": coords,
+                "cell": format!(
+                    "{}/{}/{}/{}",
+                    coords.damage_type, coords.defense_layer, coords.role, coords.scaling_vector
+                ),
                 "total_dps": entry.stats.total_dps,
                 "effective_hp": entry.stats.effective_hp,
+                "life": entry.stats.life,
+                "energy_shield": entry.stats.energy_shield,
+                "armour": entry.stats.armour,
+                "evasion": entry.stats.evasion,
+                "resists": {
+                    "fire":      entry.stats.fire_res,
+                    "cold":      entry.stats.cold_res,
+                    "lightning": entry.stats.lightning_res,
+                    "chaos":     entry.stats.chaos_res,
+                },
+                "variant_id": entry.variant_id,
                 "origin_hypothesis": entry.origin_hypothesis,
+                // The pob_import_code is what the user pastes into PoB2. The
+                // dreamer copies this VERBATIM into the Finalist; we never want
+                // the LLM to re-encode it (a Claude-generated import code would
+                // be nonsense).
+                "pob_import_code": mossraven_archive::encode_pob_import_code(&entry.pob_xml),
             })).collect::<Vec<_>>(),
         }))
+    }
+
+    /// Tier 5 — turn the current frontier into 5–10 curated finalists with prose.
+    /// Routes through the active Tier-1 driver: AnthropicApiDriver in Mode A,
+    /// the external MCP driver returns DriverIsExternal so the host (Claude
+    /// Code / Cowork) does the synthesis itself.
+    async fn synthesize_finalists(&self) -> Result<Value, McpError> {
+        let frontier = self.get_frontier().await?;
+        match self.ctx.dreamer.synthesize_finalists(&frontier).await {
+            Ok(finalists) => Ok(json!({
+                "finalists": finalists,
+                "source_frontier_size": frontier.get("frontier").and_then(|f| f.as_array()).map(|a| a.len()).unwrap_or(0),
+            })),
+            Err(mossraven_dreamer::DreamerError::DriverIsExternal) => {
+                // Mode B: tell the host to do it. Hand back the raw frontier
+                // and the schema so the external Claude can produce finalists
+                // and write them back via a separate tool call (TBD).
+                Ok(json!({
+                    "external": true,
+                    "frontier": frontier.get("frontier").cloned().unwrap_or(json!([])),
+                    "instructions": "Mode B: synthesize Finalists yourself from this frontier. Schema: {variant_id, title, one_liner, why_it_works, tags[], cell, key_stats[{label,value}], pob_import_code}. Copy variant_id/cell/pob_import_code VERBATIM.",
+                }))
+            }
+            Err(e) => Err(McpError::ToolFailed(format!("synthesize_finalists: {e}"))),
+        }
     }
 }
 

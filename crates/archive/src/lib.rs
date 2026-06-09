@@ -13,6 +13,7 @@
 //! - role: clear / boss / hybrid
 //! - scaling_vector: gem-levels / attribute-stack / unique-driven / tree-keystone
 
+use base64::Engine;
 use mossraven_pob::BuildStats;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,23 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+/// Encode a PoB2 XML build into the import code players paste into
+/// "Path of Building > Import > Import from import code".
+///
+/// The format is `urlsafe_base64( zlib_default( xml_bytes ) )`. This matches
+/// PoB2's import expectation; the WPF UI uses the equivalent C# implementation
+/// in `MainWindow.xaml.cs::EncodePobImportCode`. The two implementations must
+/// stay in sync — both compress at default-compression with the zlib wrapper
+/// (not raw deflate, not gzip), and both use the URL-safe base64 alphabet.
+pub fn encode_pob_import_code(xml: &str) -> String {
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(xml.as_bytes()).expect("write to Vec");
+    let compressed = enc.finish().expect("zlib finish");
+    base64::engine::general_purpose::URL_SAFE.encode(&compressed)
+}
 
 #[derive(Debug, Error)]
 pub enum ArchiveError {

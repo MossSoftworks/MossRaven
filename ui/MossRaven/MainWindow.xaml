@@ -14,8 +14,11 @@
         TextOptions.TextRenderingMode="Grayscale">
 
     <WindowChrome.WindowChrome>
+        <!-- ResizeBorderThickness=10 (was 5) — matches MossPage canonical pattern;
+             fatter grab zone for less-precise edge dragging. WPF content owns the
+             whole window area so resize fires anywhere within 10px of any edge. -->
         <WindowChrome CaptionHeight="36"
-                      ResizeBorderThickness="5"
+                      ResizeBorderThickness="10"
                       UseAeroCaptionButtons="False"
                       GlassFrameThickness="0"/>
     </WindowChrome.WindowChrome>
@@ -189,55 +192,293 @@
                               ResizeDirection="Columns"
                               Cursor="SizeWE"/>
 
-                <Border Grid.Column="2" Margin="0,12,12,12"
-                        CornerRadius="6"
-                        Background="{DynamicResource BgBrush}"
-                        BorderBrush="{DynamicResource DimmerBrush}"
-                        BorderThickness="1"
-                        ClipToBounds="True">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
-                        <DockPanel Grid.Row="0" Background="{DynamicResource BgBrush}" LastChildFill="False">
-                            <TextBlock DockPanel.Dock="Left"
-                                       Text="MAP-Elites archive"
-                                       Foreground="{DynamicResource TextBrush}"
-                                       FontWeight="SemiBold"
-                                       Margin="12,8,0,8"/>
-                            <TextBlock x:Name="ArchiveSummary"
-                                       DockPanel.Dock="Right"
-                                       Text="empty"
-                                       Foreground="{DynamicResource DimBrush}"
-                                       Margin="0,8,12,8"/>
-                            <Button x:Name="RefreshArchiveButton"
-                                    DockPanel.Dock="Right"
-                                    Content="Refresh"
-                                    Padding="10,3"
-                                    Margin="0,4,8,4"
-                                    Background="Transparent"
-                                    Foreground="{DynamicResource TextBrush}"
-                                    BorderBrush="{DynamicResource DimmerBrush}"
-                                    BorderThickness="1"
-                                    Click="RefreshArchiveButton_Click"/>
-                        </DockPanel>
-                        <TextBox Grid.Row="1"
-                                 x:Name="ArchiveView"
-                                 IsReadOnly="True"
-                                 AcceptsReturn="True"
-                                 TextWrapping="NoWrap"
-                                 VerticalScrollBarVisibility="Auto"
-                                 HorizontalScrollBarVisibility="Auto"
-                                 Background="Transparent"
-                                 Foreground="{DynamicResource TextBrush}"
-                                 BorderThickness="0"
-                                 FontFamily="Cascadia Mono, Consolas"
-                                 FontSize="12"
-                                 Padding="12,4"
-                                 Text="(empty — click Seed then Run to populate)"/>
-                    </Grid>
-                </Border>
+                <!-- Right pane: 5 stacked boxes (the user-facing tier model).
+                     Tiers 1-4 are Expanders (click header to expand log).
+                     Tier 5 is always expanded (it's the output the user works with). -->
+                <Grid Grid.Column="2" Margin="0,12,12,12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- TIER 1: Hypothesis (Claude / Mode B Claude Code) -->
+                    <Expander Grid.Row="0"
+                              x:Name="T1Expander"
+                              Margin="0,0,0,6"
+                              Background="{DynamicResource BgBrush}"
+                              Foreground="{DynamicResource TextBrush}"
+                              BorderBrush="{DynamicResource DimmerBrush}"
+                              BorderThickness="1">
+                        <Expander.Header>
+                            <DockPanel LastChildFill="False" Width="270">
+                                <TextBlock DockPanel.Dock="Left"
+                                           Text="Tier 1 — Hypothesis"
+                                           Foreground="{DynamicResource TextBrush}"
+                                           FontWeight="SemiBold"/>
+                                <TextBlock x:Name="T1HeaderCount"
+                                           DockPanel.Dock="Right"
+                                           Margin="0,0,8,0"
+                                           Foreground="{DynamicResource MossBrush}"
+                                           FontWeight="SemiBold"
+                                           Text="n = 0"/>
+                            </DockPanel>
+                        </Expander.Header>
+                        <Border Background="{DynamicResource BgBrush}" Padding="10,6">
+                            <StackPanel>
+                                <TextBlock Text="Claude dreams plausible hypotheses from your concept."
+                                           Foreground="{DynamicResource DimBrush}"
+                                           FontSize="11" Margin="0,0,0,4"/>
+                                <TextBox x:Name="T1Log"
+                                         IsReadOnly="True"
+                                         AcceptsReturn="True"
+                                         TextWrapping="Wrap"
+                                         MaxHeight="120"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Background="Transparent"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         BorderThickness="0"
+                                         FontFamily="Cascadia Mono, Consolas"
+                                         FontSize="11"
+                                         Text="(no hypotheses yet)"/>
+                            </StackPanel>
+                        </Border>
+                    </Expander>
+
+                    <!-- TIER 2: Mutation proposals (LLM — Claude for quality OR Cerebras for volume) -->
+                    <Expander Grid.Row="1"
+                              x:Name="T2Expander"
+                              Margin="0,0,0,6"
+                              Background="{DynamicResource BgBrush}"
+                              Foreground="{DynamicResource TextBrush}"
+                              BorderBrush="{DynamicResource DimmerBrush}"
+                              BorderThickness="1">
+                        <Expander.Header>
+                            <DockPanel LastChildFill="False" Width="270">
+                                <TextBlock DockPanel.Dock="Left"
+                                           Text="Tier 2 — Mutations proposed"
+                                           Foreground="{DynamicResource TextBrush}"
+                                           FontWeight="SemiBold"/>
+                                <TextBlock x:Name="T2HeaderCount"
+                                           DockPanel.Dock="Right"
+                                           Margin="0,0,8,0"
+                                           Foreground="{DynamicResource MossBrush}"
+                                           FontWeight="SemiBold"
+                                           Text="n = 0"/>
+                            </DockPanel>
+                        </Expander.Header>
+                        <Border Background="{DynamicResource BgBrush}" Padding="10,6">
+                            <StackPanel>
+                                <TextBlock Text="Each generation = one batch of N concrete mutations off the seed."
+                                           Foreground="{DynamicResource DimBrush}"
+                                           FontSize="11" Margin="0,0,0,4"/>
+                                <TextBox x:Name="T2Log"
+                                         IsReadOnly="True"
+                                         AcceptsReturn="True"
+                                         TextWrapping="Wrap"
+                                         MaxHeight="120"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Background="Transparent"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         BorderThickness="0"
+                                         FontFamily="Cascadia Mono, Consolas"
+                                         FontSize="11"
+                                         Text="(no generations yet)"/>
+                            </StackPanel>
+                        </Border>
+                    </Expander>
+
+                    <!-- TIER 3: PoB sims (deterministic, just numbers) -->
+                    <Expander Grid.Row="2"
+                              x:Name="T3Expander"
+                              Margin="0,0,0,6"
+                              Background="{DynamicResource BgBrush}"
+                              Foreground="{DynamicResource TextBrush}"
+                              BorderBrush="{DynamicResource DimmerBrush}"
+                              BorderThickness="1">
+                        <Expander.Header>
+                            <DockPanel LastChildFill="False" Width="270">
+                                <TextBlock DockPanel.Dock="Left"
+                                           Text="Tier 3 — PoB sims (quant)"
+                                           Foreground="{DynamicResource TextBrush}"
+                                           FontWeight="SemiBold"/>
+                                <TextBlock x:Name="T3HeaderCount"
+                                           DockPanel.Dock="Right"
+                                           Margin="0,0,8,0"
+                                           Foreground="{DynamicResource MossBrush}"
+                                           FontWeight="SemiBold"
+                                           Text="n = 0"/>
+                            </DockPanel>
+                        </Expander.Header>
+                        <Border Background="{DynamicResource BgBrush}" Padding="10,6">
+                            <StackPanel>
+                                <TextBlock Text="LuaJIT PoB calc returns BuildStats per variant. Single source of truth."
+                                           Foreground="{DynamicResource DimBrush}"
+                                           FontSize="11" Margin="0,0,0,4"/>
+                                <TextBox x:Name="T3Log"
+                                         IsReadOnly="True"
+                                         AcceptsReturn="True"
+                                         TextWrapping="Wrap"
+                                         MaxHeight="120"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Background="Transparent"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         BorderThickness="0"
+                                         FontFamily="Cascadia Mono, Consolas"
+                                         FontSize="11"
+                                         Text="(no sims yet)"/>
+                            </StackPanel>
+                        </Border>
+                    </Expander>
+
+                    <!-- TIER 4: Pruning by interest/novelty (LLM — Cerebras fine here, easier judgment task) -->
+                    <Expander Grid.Row="3"
+                              x:Name="T4Expander"
+                              Margin="0,0,0,6"
+                              Background="{DynamicResource BgBrush}"
+                              Foreground="{DynamicResource TextBrush}"
+                              BorderBrush="{DynamicResource DimmerBrush}"
+                              BorderThickness="1">
+                        <Expander.Header>
+                            <DockPanel LastChildFill="False" Width="270">
+                                <TextBlock DockPanel.Dock="Left"
+                                           Text="Tier 4 — Pruned by interest"
+                                           Foreground="{DynamicResource TextBrush}"
+                                           FontWeight="SemiBold"/>
+                                <TextBlock x:Name="T4HeaderCount"
+                                           DockPanel.Dock="Right"
+                                           Margin="0,0,8,0"
+                                           Foreground="{DynamicResource MossBrush}"
+                                           FontWeight="SemiBold"
+                                           Text="n = 0"/>
+                            </DockPanel>
+                        </Expander.Header>
+                        <Border Background="{DynamicResource BgBrush}" Padding="10,6">
+                            <StackPanel>
+                                <TextBlock Text="Cerebras judges scored variants for novelty + plausibility. Drops the boring."
+                                           Foreground="{DynamicResource DimBrush}"
+                                           FontSize="11" Margin="0,0,0,4"/>
+                                <TextBox x:Name="T4Log"
+                                         IsReadOnly="True"
+                                         AcceptsReturn="True"
+                                         TextWrapping="Wrap"
+                                         MaxHeight="120"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Background="Transparent"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         BorderThickness="0"
+                                         FontFamily="Cascadia Mono, Consolas"
+                                         FontSize="11"
+                                         Text="(no prunings yet — currently pre-sim pruning only; smart post-sim pruning is next session)"/>
+                            </StackPanel>
+                        </Border>
+                    </Expander>
+
+                    <!-- TIER 5: Finalists — always expanded, clickable copy-to-clipboard cards -->
+                    <Border Grid.Row="4"
+                            CornerRadius="6"
+                            Background="{DynamicResource BgBrush}"
+                            BorderBrush="{DynamicResource DimmerBrush}"
+                            BorderThickness="1"
+                            ClipToBounds="True">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <DockPanel Grid.Row="0" LastChildFill="False" Margin="14,10,12,4">
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="Tier 5 — Finalists"
+                                               Foreground="{DynamicResource TextBrush}"
+                                               FontWeight="SemiBold"
+                                               FontSize="13"/>
+                                    <TextBlock Text="Claude-curated viable builds. Click to copy PoB code."
+                                               Foreground="{DynamicResource DimBrush}"
+                                               FontSize="11"/>
+                                </StackPanel>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <TextBlock x:Name="T3CountText"
+                                               Text="0"
+                                               Foreground="{DynamicResource MossBrush}"
+                                               FontWeight="SemiBold"
+                                               FontSize="18"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,10,0"/>
+                                    <Button x:Name="SynthesizeFinalistsButton"
+                                            Content="Synthesize"
+                                            ToolTip="Tier 5 — ask Claude to curate 5–10 finalists from the frontier"
+                                            VerticalAlignment="Center"
+                                            Padding="10,3"
+                                            Margin="0,0,6,0"
+                                            Background="{DynamicResource MossBrush}"
+                                            Foreground="White"
+                                            BorderBrush="{DynamicResource MossBrush}"
+                                            BorderThickness="1"
+                                            Click="SynthesizeFinalistsButton_Click"/>
+                                    <Button x:Name="RefreshArchiveButton"
+                                            Content="Refresh"
+                                            VerticalAlignment="Center"
+                                            Padding="10,3"
+                                            Background="Transparent"
+                                            Foreground="{DynamicResource TextBrush}"
+                                            BorderBrush="{DynamicResource DimmerBrush}"
+                                            BorderThickness="1"
+                                            Click="RefreshArchiveButton_Click"/>
+                                </StackPanel>
+                            </DockPanel>
+
+                            <ListBox Grid.Row="1"
+                                     x:Name="BuildList"
+                                     Background="Transparent"
+                                     Foreground="{DynamicResource TextBrush}"
+                                     BorderThickness="0"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                     Padding="6,2,6,8">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="Margin" Value="6,3"/>
+                                        <Setter Property="Padding" Value="10,8"/>
+                                        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+                                        <Setter Property="Cursor" Value="Hand"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <Border x:Name="bd"
+                                                            Background="{TemplateBinding Background}"
+                                                            BorderBrush="{DynamicResource DimmerBrush}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="5"
+                                                            Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsSelected" Value="True">
+                                                            <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource MossBrush}"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                            </ListBox>
+
+                            <TextBlock Grid.Row="2"
+                                       x:Name="BuildListHint"
+                                       Text="Click a build to copy its PoB import code to clipboard."
+                                       Foreground="{DynamicResource DimmerBrush}"
+                                       FontSize="11"
+                                       Margin="14,4,12,10"/>
+                        </Grid>
+                    </Border>
+                </Grid>
             </Grid>
 
             <!-- Status strip -->
