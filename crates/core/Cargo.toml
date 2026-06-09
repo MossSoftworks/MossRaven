@@ -1,0 +1,25 @@
+[package]
+name = "mossraven-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Orchestration core — search loop, cascade evaluator, Tier-3 dispatch"
+
+[dependencies]
+mossraven-pob = { workspace = true }
+mossraven-archive = { workspace = true }
+mossraven-surrogate = { workspace = true }
+mossraven-node-protocol = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }

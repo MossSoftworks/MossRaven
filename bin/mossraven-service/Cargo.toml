@@ -1,0 +1,29 @@
+[package]
+name = "mossraven-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "MossRaven orchestration service — runs the search loop, owns the MAP-Elites archive, hosts the MCP control surface"
+
+[[bin]]
+name = "mossraven-service"
+path = "src/main.rs"
+
+[dependencies]
+mossraven-core = { workspace = true }
+mossraven-pob = { workspace = true }
+mossraven-archive = { workspace = true }
+mossraven-surrogate = { workspace = true }
+mossraven-dreamer = { workspace = true }
+mossraven-mcp-server = { workspace = true }
+
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }

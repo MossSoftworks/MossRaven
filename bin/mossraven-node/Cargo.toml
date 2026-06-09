@@ -1,0 +1,27 @@
+[package]
+name = "mossraven-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "MossRaven power-user farm node — accepts batched score requests, runs PoB-headless, returns stats"
+
+[[bin]]
+name = "mossraven-node"
+path = "src/main.rs"
+
+[dependencies]
+mossraven-pob = { workspace = true }
+mossraven-node-protocol = { workspace = true }
+
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+rayon = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }

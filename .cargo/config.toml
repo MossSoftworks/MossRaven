@@ -1,0 +1,9 @@
+# Workspace-wide cargo config.
+#
+# Note: the NoDefaultCurrentDirectoryInExePath override we tried here was
+# INEFFECTIVE — Windows enforces CWD execute-resolution deeper than process
+# env. The actual fix for the LuaJIT MSVC bootstrap is scripts/patch-luajit-msvc.ps1
+# which patches the vendored msvcbuild.bat to use `.\` prefixes.
+#
+# This file is intentionally empty; kept as a placeholder so the .cargo/ dir
+# exists for future workspace-wide config additions.

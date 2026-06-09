@@ -1,0 +1,128 @@
+<Window x:Class="MossRaven.ConceptHistoryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="MossRaven — Concept history"
+        Height="480" Width="560"
+        MinWidth="320" MinHeight="240"
+        WindowStartupLocation="CenterOwner"
+        WindowStyle="SingleBorderWindow"
+        Background="{DynamicResource BgBrush}"
+        FontFamily="Segoe UI Variable Text, Segoe UI, Segoe UI Emoji"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="Grayscale">
+
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="36"
+                      ResizeBorderThickness="5"
+                      UseAeroCaptionButtons="False"
+                      GlassFrameThickness="0"/>
+    </WindowChrome.WindowChrome>
+
+    <Border x:Name="RootBorder"
+            CornerRadius="8"
+            Background="{DynamicResource BgBrush}"
+            BorderBrush="{DynamicResource BorderBrush}"
+            BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="36"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Background="{DynamicResource BgBrush}">
+                <TextBlock Text="Concept history"
+                           HorizontalAlignment="Left"
+                           VerticalAlignment="Center"
+                           Margin="14,0,0,0"
+                           Foreground="{DynamicResource DimBrush}"
+                           FontSize="13"
+                           FontWeight="SemiBold"/>
+                <Button HorizontalAlignment="Right"
+                        Style="{StaticResource TitleBarCloseBtn}"
+                        Click="BtnClose_Click" ToolTip="Close">
+                    <Path Width="16" Height="16" Stretch="None" SnapsToDevicePixels="True"
+                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                          StrokeThickness="1.25"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                          Data="M 3,3 L 13,13 M 13,3 L 3,13"/>
+                </Button>
+            </Grid>
+
+            <!-- Rounded list of past concepts. Double-click or Enter to pick. -->
+            <Border Grid.Row="1" Margin="12,4,12,8"
+                    CornerRadius="6"
+                    Background="{DynamicResource BgBrush}"
+                    BorderBrush="{DynamicResource DimmerBrush}"
+                    BorderThickness="1">
+                <ListBox x:Name="HistoryList"
+                         Background="Transparent"
+                         Foreground="{DynamicResource TextBrush}"
+                         BorderThickness="0"
+                         FontFamily="Segoe UI Variable Text, Segoe UI, Calibri"
+                         FontSize="13"
+                         Padding="4"
+                         MouseDoubleClick="HistoryList_MouseDoubleClick"
+                         KeyDown="HistoryList_KeyDown">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="Padding" Value="10,8"/>
+                            <Setter Property="Margin" Value="0,1"/>
+                            <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ListBoxItem">
+                                        <Border x:Name="bd"
+                                                Background="{TemplateBinding Background}"
+                                                CornerRadius="4"
+                                                Padding="{TemplateBinding Padding}">
+                                            <ContentPresenter/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                                            </Trigger>
+                                            <Trigger Property="IsSelected" Value="True">
+                                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource MossBrush}"/>
+                                                <Setter Property="Foreground" Value="{DynamicResource CloseHoverFgBrush}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                </ListBox>
+            </Border>
+
+            <Grid Grid.Row="2" Margin="12,0,12,12">
+                <TextBlock x:Name="HintText"
+                           Text="Double-click or press Enter to use. Esc to close."
+                           Foreground="{DynamicResource DimmerBrush}"
+                           FontSize="11"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Left"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Cancel"
+                            Padding="14,6"
+                            Margin="0,0,6,0"
+                            Background="Transparent"
+                            Foreground="{DynamicResource TextBrush}"
+                            BorderBrush="{DynamicResource DimmerBrush}"
+                            BorderThickness="1"
+                            Cursor="Hand"
+                            Click="BtnClose_Click"/>
+                    <Button Content="Use selected"
+                            Padding="14,6"
+                            Background="{DynamicResource MossBrush}"
+                            Foreground="{DynamicResource CloseHoverFgBrush}"
+                            BorderThickness="0"
+                            Cursor="Hand"
+                            Click="BtnUseSelected_Click"/>
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

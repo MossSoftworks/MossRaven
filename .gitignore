@@ -1,0 +1,35 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# .NET / WPF
+ui/**/bin/
+ui/**/obj/
+ui/**/.vs/
+ui/**/*.user
+
+# Vendored upstream (cloned at first run; never committed per GGG fan-content policy)
+/vendor/
+
+# Built artifacts (single-file publish bundles + Rust release binaries staged for shipping)
+/dist/
+
+# Working dir for source dives, etc.
+/scratch/
+
+# Local config and secrets
+.env
+.env.local
+config.local.toml
+**/.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# PoB fixture XMLs are user-supplied and may include GGG-owned data.
+# Keep the README + .expected.json side-cars but never commit raw XML.
+crates/pob/tests/fixtures/*.xml

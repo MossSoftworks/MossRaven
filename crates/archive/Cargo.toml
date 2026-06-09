@@ -1,0 +1,18 @@
+[package]
+name = "mossraven-archive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "MAP-Elites quality-diversity archive for POE2 builds"
+
+[dependencies]
+mossraven-pob = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+directories = { workspace = true }

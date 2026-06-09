@@ -1,0 +1,20 @@
+[package]
+name = "mossraven-dreamer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Tier-1 driver — Mode A (Anthropic API) and Mode B (MCP for Claude Code/Cowork)"
+
+[dependencies]
+mossraven-archive = { workspace = true }
+mossraven-mcp-server = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

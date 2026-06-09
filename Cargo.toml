@@ -1,0 +1,78 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pob",
+    "crates/archive",
+    "crates/surrogate",
+    "crates/dreamer",
+    "crates/core",
+    "crates/mcp-server",
+    "crates/node-protocol",
+    "bin/mossraven-service",
+    "bin/mossraven-node",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Taylor"]
+repository = "https://github.com/taylor/MossRaven"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "io-util", "io-std", "net", "time"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Errors and logging
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP (rustls so we don't drag in system OpenSSL on Windows)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+axum = "0.8"
+tower = "0.5"
+
+# Lua FFI — production-fidelity LuaJIT (matches PoB2's design target).
+#
+# Windows-host build prerequisite: LuaJIT's MSVC bootstrap (msvcbuild.bat →
+# minilua → DynASM) invokes minilua via bare name (`minilua dynasm.lua ...`).
+# Windows hosts that block CWD execute-resolution (Group Policy, WDAC, or the
+# kernel NoDefaultCurrentDirectoryInExePath policy) refuse the bare name even
+# with env-var workarounds.
+#
+# Fix: run scripts/patch-luajit-msvc.ps1 once. It patches the .bat in the
+# cargo registry (extras/msvcbuild.bat + luajit2/src/msvcbuild.bat) to use
+# `.\minilua` and `.\buildvm`. Idempotent. Re-run after `cargo update` if
+# luajit-src bumps. See docs/pob-deepdive.md "Post-extraction status" for the
+# long form and the proper [patch.crates-io] fork plan.
+mlua = { version = "0.10", features = ["luajit", "vendored"] }
+
+# Parallel evaluation across cores (Tier 3 local backend)
+rayon = "1"
+parking_lot = "0.12"
+
+# Standard paths
+directories = "5"
+
+# Internal crates — depend on each other by workspace path
+mossraven-pob = { path = "crates/pob" }
+mossraven-archive = { path = "crates/archive" }
+mossraven-surrogate = { path = "crates/surrogate" }
+mossraven-dreamer = { path = "crates/dreamer" }
+mossraven-core = { path = "crates/core" }
+mossraven-mcp-server = { path = "crates/mcp-server" }
+mossraven-node-protocol = { path = "crates/node-protocol" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

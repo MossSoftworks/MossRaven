@@ -1,0 +1,19 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Pad + header share one colour -->
+    <SolidColorBrush x:Key="BgBrush"           Color="#FCFCFC"/>
+    <SolidColorBrush x:Key="TextBrush"         Color="#5C5C5C"/>
+    <SolidColorBrush x:Key="DimBrush"          Color="#6A6A6A"/>
+    <SolidColorBrush x:Key="DimmerBrush"       Color="#D4D4D4"/>
+    <!-- Rainy-day forest moss: deep muted green, calming on white. -->
+    <SolidColorBrush x:Key="MossBrush"         Color="#1E2A1B"/>
+    <SolidColorBrush x:Key="HoverBrush"        Color="#E5E5E5"/>
+    <SolidColorBrush x:Key="CaretBrush"        Color="#9A9A9A"/>
+    <SolidColorBrush x:Key="SelectionBrush"    Color="#B5D6F4"/>
+    <SolidColorBrush x:Key="PinActiveBrush"    Color="#2A452D"/>
+    <SolidColorBrush x:Key="CloseHoverBrush"   Color="#C42B1C"/>
+    <SolidColorBrush x:Key="CloseHoverFgBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="BorderBrush"       Color="#DEDEDE"/>
+
+</ResourceDictionary>

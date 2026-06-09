@@ -1,0 +1,29 @@
+[Unit]
+Description=MossRaven POE2 build-discovery farm node
+Documentation=https://github.com/taylor/MossRaven
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mossraven
+Group=mossraven
+WorkingDirectory=/opt/mossraven
+EnvironmentFile=/etc/mossraven/node.env
+ExecStart=/opt/mossraven/mossraven-node
+Restart=on-failure
+RestartSec=5
+
+# Sandboxing — read-only filesystem except the node's own working dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+ReadWritePaths=/opt/mossraven
+
+[Install]
+WantedBy=multi-user.target
