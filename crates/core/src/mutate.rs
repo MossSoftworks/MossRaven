@@ -47,7 +47,40 @@ pub fn apply_ops_to_xml(seed_xml: &str, ops: &[MutationOp]) -> String {
             }
         }
     }
+    // The `<Skills ... defaultGemLevel="normalMaximum" defaultGemQuality="0">`
+    // container overrides every individual `<Gem level="X" quality="Y">` we
+    // just wrote — PoB scores from the defaults, not the per-gem attrs, so
+    // our mutations produce zero score change. Force defaults to `custom` so
+    // PoB actually reads each gem's level/quality.
+    if !ops.is_empty() {
+        xml = set_skills_container_attr(&xml, "defaultGemLevel", "custom");
+        xml = set_skills_container_attr(&xml, "defaultGemQuality", "custom");
+    }
     xml
+}
+
+/// Rewrite a single attribute on the `<Skills ...>` opening tag (not
+/// `<SkillSet>`, not the `</Skills>` closer). Used to flip the build's
+/// defaultGemLevel / defaultGemQuality from "normalMaximum" / "0" to
+/// "custom" so PoB respects per-gem level/quality attributes.
+fn set_skills_container_attr(xml: &str, attr: &str, new_value: &str) -> String {
+    // Find "<Skills " specifically (not "<SkillSet" which also starts with <Skills).
+    // Match "<Skills " (with trailing space) or "<Skills>".
+    let Some(start) = xml.find("<Skills ").or_else(|| xml.find("<Skills>")) else {
+        return xml.to_string();
+    };
+    let after_open = start + "<Skills".len();
+    let Some(close_offset) = xml[after_open..].find('>') else {
+        return xml.to_string();
+    };
+    let close = after_open + close_offset + 1;
+    let tag = &xml[start..close];
+    let rewritten = set_attr_in_tag(tag, attr, new_value);
+    let mut out = String::with_capacity(xml.len() + new_value.len() + 8);
+    out.push_str(&xml[..start]);
+    out.push_str(&rewritten);
+    out.push_str(&xml[close..]);
+    out
 }
 
 /// Find the first `<Gem ...>` element matching `gem_name_spec` (or any gem if
@@ -243,6 +276,36 @@ mod tests {
         assert!(ws.contains(r#"level="7""#), "got: {ws}");
         assert!(ws.contains(r#"quality="5""#), "got: {ws}");
         assert!(out.contains(r#"nameSpec="Magnified Effect""#), "got: {out}");
+    }
+
+    #[test]
+    fn skills_container_defaults_flipped_to_custom() {
+        let xml = r#"<PathOfBuilding2>
+<Skills sortGemsByDPSField="CombinedDPS" activeSkillSet="1" sortGemsByDPS="true" defaultGemQuality="0" defaultGemLevel="normalMaximum" showSupportGemTypes="ALL">
+<SkillSet id="1">
+<Skill>
+<Gem level="20" nameSpec="Whirling Slash" quality="0"/>
+</Skill>
+</SkillSet>
+</Skills>
+</PathOfBuilding2>"#;
+        let ops = vec![MutationOp::SetGemLevel {
+            gem: "Whirling Slash".to_string(),
+            level: 5,
+        }];
+        let out = apply_ops_to_xml(xml, &ops);
+        assert!(out.contains(r#"defaultGemLevel="custom""#), "got: {out}");
+        assert!(out.contains(r#"defaultGemQuality="custom""#), "got: {out}");
+        assert!(out.contains(r#"level="5""#), "got: {out}");
+        // Sanity: SkillSet is left alone.
+        assert!(out.contains(r#"<SkillSet id="1">"#), "got: {out}");
+    }
+
+    #[test]
+    fn no_ops_leaves_skills_container_intact() {
+        let xml = r#"<Skills defaultGemLevel="normalMaximum" defaultGemQuality="0"><Gem nameSpec="X" level="1"/></Skills>"#;
+        let out = apply_ops_to_xml(xml, &[]);
+        assert_eq!(out, xml);
     }
 
     #[test]

@@ -18,6 +18,50 @@ use thiserror::Error;
 
 pub mod vocab;
 
+/// Find the first `<Gem nameSpec="X">` inside the `<Skill mainActiveSkill="1">`
+/// block — that's the scored active skill whose level actually moves DPS in
+/// POE2 (supports are level-agnostic). Returns None if the build XML doesn't
+/// have a `mainActiveSkill="1"` annotation or no gem under it.
+pub fn find_main_skill_gem_name(xml: &str) -> Option<String> {
+    let needle = r#"mainActiveSkill="1""#;
+    let flag_idx = xml.find(needle)?;
+    // Walk forward from `mainActiveSkill="1"` to find the first nameSpec="...".
+    // The Skill opening tag itself doesn't carry nameSpec, only its <Gem>
+    // children do.
+    let tail = &xml[flag_idx..];
+    let ns_start = tail.find(r#"nameSpec=""#)?;
+    let after_ns = ns_start + r#"nameSpec=""#.len();
+    let end_quote = tail[after_ns..].find('"')?;
+    Some(tail[after_ns..after_ns + end_quote].to_string())
+}
+
+/// Insert a comment marker before every `<Skill ... mainActiveSkill="1" ...>`
+/// block so the surrogate can see which gem group is the scored skill. PoB
+/// only reports DPS for this group; mutations to other groups (warcries,
+/// herald sources, alt skill links) apply correctly but don't move the score.
+fn annotate_main_skill(skills_block: &str) -> String {
+    let needle = r#"mainActiveSkill="1""#;
+    let mut out = String::with_capacity(skills_block.len() + 128);
+    let mut cursor = 0;
+    while let Some(rel) = skills_block[cursor..].find(needle) {
+        let abs = cursor + rel;
+        // Walk back from `mainActiveSkill="1"` to the `<Skill` that owns it.
+        let skill_start = skills_block[..abs].rfind("<Skill ").unwrap_or(abs);
+        out.push_str(&skills_block[cursor..skill_start]);
+        out.push_str("\n<!-- *** MAIN SCORED SKILL — mutations to gems IN THIS BLOCK change DPS *** -->\n");
+        // Advance cursor; the rest of the block (including the annotation
+        // anchor) gets copied normally.
+        cursor = skill_start;
+        // Avoid infinite loop if multiple skills are flagged main: jump past
+        // the needle so the next iteration looks for the NEXT main flag.
+        let after_needle = abs + needle.len();
+        out.push_str(&skills_block[cursor..after_needle]);
+        cursor = after_needle;
+    }
+    out.push_str(&skills_block[cursor..]);
+    out
+}
+
 #[derive(Debug, Error)]
 pub enum SurrogateError {
     #[error("http error: {0}")]
@@ -105,7 +149,7 @@ pub struct OpenAiCompatConfig {
 }
 
 fn default_temp() -> f32 { 0.4 }
-fn default_max_tokens() -> u32 { 2048 }
+fn default_max_tokens() -> u32 { 8192 }
 
 impl OpenAiCompatConfig {
     pub fn cerebras_default(api_key: String) -> Self {
@@ -114,7 +158,13 @@ impl OpenAiCompatConfig {
             model: "gpt-oss-120b".into(),
             api_key: Some(api_key),
             temperature: 0.4,
-            max_tokens: 2048,
+            // Cerebras's live free-tier models split between non-reasoning
+            // (gpt-oss-120b) and reasoning (zai-glm-4.7). Reasoning models
+            // burn 1-2K tokens thinking before emitting an answer; 2K was too
+            // tight and caused `finish_reason: "length"` with the answer JSON
+            // stranded inside `message.reasoning`. 8K gives headroom for
+            // either family.
+            max_tokens: 8192,
         }
     }
     pub fn local_ollama_default() -> Self {
@@ -123,7 +173,20 @@ impl OpenAiCompatConfig {
             model: "qwen2.5:14b".into(),
             api_key: None,
             temperature: 0.4,
-            max_tokens: 2048,
+            max_tokens: 8192,
+        }
+    }
+    pub fn gemini_default(api_key: String) -> Self {
+        // Google AI Studio's OpenAI-compat endpoint. Free tier (no card):
+        // gemini-2.5-flash-lite at 1500 req/day, 15 req/min — plenty for
+        // our 2-call-per-generation cascade. Better instruction following
+        // on negative constraints than the 120B-class Cerebras models.
+        Self {
+            base_url: "https://generativelanguage.googleapis.com/v1beta/openai".into(),
+            model: "gemini-2.5-flash-lite".into(),
+            api_key: Some(api_key),
+            temperature: 0.4,
+            max_tokens: 8192,
         }
     }
 }
@@ -143,10 +206,46 @@ impl OpenAiCompatSurrogate {
     }
 
     /// POST to {base_url}/chat/completions and return the assistant message
-    /// content. Any non-2xx surfaces as SurrogateError::BadStatus with the
-    /// response body, which is what we want for visibility into provider
-    /// errors (rate limits, model-not-found, etc.).
+    /// content. Non-2xx other than 429 surfaces as SurrogateError::BadStatus
+    /// with the response body. 429 (rate limit) triggers an exponential
+    /// backoff with up to 3 retries — Cerebras's free tier RPM limit makes
+    /// this hit constantly on multi-gen runs, so we paper over it transparently.
     async fn chat(&self, system: &str, user: &str) -> Result<String, SurrogateError> {
+        let mut delay_ms = 1000;
+        let mut last_429: Option<(u16, String)> = None;
+        for attempt in 0..4 {
+            match self.chat_once(system, user).await {
+                Ok(s) => return Ok(s),
+                Err(SurrogateError::BadStatus { status: 429, body }) => {
+                    last_429 = Some((429, body));
+                    if attempt == 3 {
+                        break;
+                    }
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        delay_ms,
+                        "surrogate rate-limited (429); backing off"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    // 1s -> 4s -> 15s -> bail. The Cerebras free-tier RPM
+                    // bucket refills every 60s, but a few short waits often
+                    // get through during a refill window.
+                    delay_ms = match delay_ms {
+                        1000 => 4000,
+                        4000 => 15000,
+                        _ => delay_ms,
+                    };
+                    continue;
+                }
+                Err(other) => return Err(other),
+            }
+        }
+        let (status, body) = last_429
+            .unwrap_or((429, "rate limited (no body captured)".to_string()));
+        Err(SurrogateError::BadStatus { status, body })
+    }
+
+    async fn chat_once(&self, system: &str, user: &str) -> Result<String, SurrogateError> {
         let url = format!("{}/chat/completions", self.cfg.base_url.trim_end_matches('/'));
         let body = json!({
             "model": self.cfg.model,
@@ -174,15 +273,75 @@ impl OpenAiCompatSurrogate {
         }
         let v: Value = serde_json::from_str(&text)
             .map_err(|e| SurrogateError::Schema(format!("body not JSON: {e} — {text}")))?;
-        let content = v
+        // Some providers (Cerebras zai-glm-4.7) split their output between
+        // `message.content` (the answer the user asked for) and
+        // `message.reasoning` (the chain-of-thought). When a reasoning model
+        // hits `finish_reason: "length"` mid-thought, content stays empty.
+        // Fall back to reasoning so we at least get something to JSON-extract.
+        let msg = v
             .get("choices")
             .and_then(|c| c.get(0))
             .and_then(|c| c.get("message"))
-            .and_then(|m| m.get("content"))
+            .ok_or_else(|| SurrogateError::Schema(format!("no choices[0].message in {text}")))?;
+        let content = msg
+            .get("content")
             .and_then(|c| c.as_str())
-            .ok_or_else(|| SurrogateError::Schema(format!("no choices[0].message.content in {text}")))?
+            .filter(|s| !s.trim().is_empty());
+        let reasoning = msg
+            .get("reasoning")
+            .and_then(|c| c.as_str())
+            .filter(|s| !s.trim().is_empty());
+        let out = content.or(reasoning).ok_or_else(|| {
+            SurrogateError::Schema(format!(
+                "no usable message.content or message.reasoning in {text}"
+            ))
+        })?;
+        Ok(out.to_string())
+    }
+
+    /// Extract a focused slice of the PoB XML that the surrogate can actually
+    /// act on. The full seed is ~30 KB and our truncation-from-byte-0 was
+    /// hiding the `<Skills>` block behind 2 KB of `<PlayerStat>` lines.
+    ///
+    /// Strategy: pull the `<Build>` opening tag (class + ascendancy) PLUS the
+    /// `<Skills>...</Skills>` block (every gem the build has), AND annotate
+    /// which `<Skill>` block is the scored one with a `<!-- *** MAIN SKILL
+    /// (mutations here actually change DPS) *** -->` comment. The LLM was
+    /// proposing mutations on decorative supports (e.g. Volcanic Eruption on
+    /// the second Whirling Slash) which apply correctly but PoB doesn't score.
+    fn extract_gem_slice(xml: &str, char_budget: usize) -> String {
+        let class_line = xml
+            .lines()
+            .find(|l| l.contains("<Build "))
+            .unwrap_or("")
             .to_string();
-        Ok(content)
+        let skills_start = xml.find("<Skills");
+        let skills_end = xml.find("</Skills>");
+        let skills_block = match (skills_start, skills_end) {
+            (Some(s), Some(e)) if e > s => &xml[s..e + "</Skills>".len()],
+            _ => "",
+        };
+        // Annotate the main scored skill block. PoB scores the `<Skill>` that
+        // has `mainActiveSkill="1"` — every gem inside that block is on the
+        // critical path. Other blocks are warcries, herald-sources, or alt
+        // links the build uses for utility, none of which move the DPS that
+        // Tier 3 reports.
+        let annotated_skills = annotate_main_skill(skills_block);
+        let combined = if class_line.is_empty() {
+            annotated_skills.clone()
+        } else {
+            format!("{class_line}\n{annotated_skills}")
+        };
+        if combined.len() <= char_budget {
+            return combined;
+        }
+        let half = char_budget / 2;
+        format!(
+            "{}\n…[trimmed {} chars]…\n{}",
+            &combined[..half],
+            combined.len() - char_budget,
+            &combined[combined.len() - half..]
+        )
     }
 
     /// Salvage a JSON value from a model response. Models sometimes wrap JSON
@@ -258,17 +417,27 @@ impl SurrogateProvider for OpenAiCompatSurrogate {
                defense_layer  ∈ evasion | armour | es | hybrid | block-spell | dodge-roll\n\
                role           ∈ clear | boss | hybrid\n\
                scaling_vector ∈ gem-levels | attribute-stack | unique-driven | tree-keystone\n\n\
-             For each mutation, ALSO return a `ops` array of STRUCTURED ops that the engine will\n\
-             actually apply to the PoB XML. Each op is one of:\n\
-               {{\"op\":\"set_gem_level\", \"gem\":\"Whirling Slash\", \"level\":18}}\n\
-               {{\"op\":\"set_gem_quality\", \"gem\":\"Whirling Slash\", \"quality\":20}}\n\
-               {{\"op\":\"swap_gem\", \"old\":\"Inspiration\", \"new\":\"Frigid Bond\"}}\n\
-             The `gem`/`old`/`new` strings must match the `nameSpec` attribute on a `<Gem>` element\n\
-             in the PoB XML. If you can't express the mutation as ops, return [] for ops (the engine\n\
-             will still record the description but the build won't actually differ from the seed).\n\n\
+             For each mutation, ALSO return an `ops` array of STRUCTURED ops the engine will\n\
+             ACTUALLY APPLY to the PoB XML. Each op is one of:\n\
+               {{\"op\":\"set_gem_level\", \"gem\":\"<exact nameSpec>\", \"level\":N}}     // 1..20\n\
+               {{\"op\":\"set_gem_quality\", \"gem\":\"<exact nameSpec>\", \"quality\":Q}}  // 0..20\n\
+               {{\"op\":\"swap_gem\", \"old\":\"<exact nameSpec>\", \"new\":\"<other POE2 gem>\"}}\n\n\
+             ⚠️ POE2 SCORING RULES (read carefully — these are not PoE1):\n\
+             - **Only the ACTIVE skill gem's `level` moves DPS.** This is the FIRST gem in the\n\
+               `<Skill mainActiveSkill=\"1\">` block (the main skill, NOT its supports).\n\
+             - **Support gem level changes are NO-OPS in PoE2.** Supports are binary in POE2;\n\
+               their `level=\"N\"` attribute doesn't scale their effect. set_gem_level on a support\n\
+               wastes a variant slot.\n\
+             - **Quality changes barely move DPS** for most gems. Don't lead with quality.\n\
+             - **swap_gem is v1-broken** — it rewrites only the display label, not the scored skill.\n\n\
+             To explore distinct DPS values, each variant MUST set the main skill gem to a\n\
+             DIFFERENT level. Example: m1→level 4, m2→level 8, m3→level 12, m4→level 16, m5→level 20.\n\
+             Variants targeting the SAME gem at the SAME level produce identical scores → wasted.\n\n\
+             The `gem` / `old` / `new` strings MUST match a `nameSpec` attribute on a `<Gem>` element\n\
+             in the PoB XML excerpt above — copy them VERBATIM, do not invent new gem names.\n\n\
              Return JSON of shape:\n\
-             {{\n  \"mutations\": [\n    {{ \"variant_id\": \"m1\", \"mutation\": \"swap support gem Inspiration for Frigid Bond\", \"cell_focus\": \"cold/es/boss/unique-driven\", \"ops\": [{{\"op\":\"swap_gem\",\"old\":\"Inspiration\",\"new\":\"Frigid Bond\"}}] }},\n    ...\n  ]\n}}",
-            xml = &seed_pob_xml[..seed_pob_xml.len().min(2000)],
+             {{\n  \"mutations\": [\n    {{ \"variant_id\": \"m1\", \"mutation\": \"undercut the main skill — Whirling Slash at level 4 for fast-clear, low-mana variant\", \"cell_focus\": \"physical/armour/clear/gem-levels\", \"ops\": [{{\"op\":\"set_gem_level\",\"gem\":\"Whirling Slash\",\"level\":4}}] }},\n    {{ \"variant_id\": \"m2\", \"mutation\": \"mid-level main skill at 12 for resource trade-off\", \"cell_focus\": \"physical/armour/hybrid/gem-levels\", \"ops\": [{{\"op\":\"set_gem_level\",\"gem\":\"Whirling Slash\",\"level\":12}}] }},\n    ...\n  ]\n}}",
+            xml = Self::extract_gem_slice(seed_pob_xml, 6000),
             count = count,
         );
 
@@ -386,30 +555,29 @@ impl SurrogateProvider for MockSurrogate {
             "chaos/hybrid/clear/attribute-stack",
             "physical/armour/boss/unique-driven",
         ];
+        // Find the main scored skill's gem name in the seed XML — the first
+        // `<Gem nameSpec="...">` inside the `<Skill mainActiveSkill="1">`
+        // block. That's the only gem whose level changes move PoB's DPS for
+        // this build (POE2 supports are level-agnostic). If we can't find it,
+        // fall back to "*" wildcard.
+        let main_skill_gem = find_main_skill_gem_name(seed_pob_xml).unwrap_or_else(|| "*".to_string());
         Ok((0..count)
             .map(|i| {
-                // Each mock variant gets a different gem-level mutation on the seed's
-                // first gem. The variant_id determines the level deterministically,
-                // so successive runs produce repeatable diversity. PoB rescores each
-                // mutated XML differently → cells fill with actually-distinct stats.
-                let level = (3 + (i as u32 * 2) % 18) + 1; // 4, 6, 8, ..., 20
+                // Pick a level from the explore set [4, 8, 12, 16, 20] so each
+                // variant produces a distinct DPS. The cycle wraps if count > 5.
+                let levels = [4u32, 8, 12, 16, 20];
+                let level = levels[i % levels.len()];
                 MutationProposal {
                     variant_id: format!("mock-{i}"),
                     pob_xml: seed_pob_xml.to_string(),
                     origin_hypothesis: Some(format!(
-                        "mock mutation #{i} — set primary gem level to {level}"
+                        "mock mutation #{i} — set main skill {main_skill_gem} to level {level}"
                     )),
                     cell_focus: Some(cells[i % cells.len()].to_string()),
-                    ops: vec![
-                        // Set level on whatever the first gem is. For the Ritualist
-                        // seed.xml that's "Whirling Slash"; for other seeds it picks
-                        // up whatever PoB has as the first <Gem> element. Using a
-                        // wildcard-ish approach: SetGemLevel matches "*" → "first gem".
-                        MutationOp::SetGemLevel {
-                            gem: "*".to_string(),
-                            level,
-                        },
-                    ],
+                    ops: vec![MutationOp::SetGemLevel {
+                        gem: main_skill_gem.clone(),
+                        level,
+                    }],
                 }
             })
             .collect())

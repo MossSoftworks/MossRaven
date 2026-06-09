@@ -3159,4 +3159,174 @@ mod smoke_tests {
             obj.keys().collect::<Vec<_>>()
         );
     }
+
+    /// Bisect what attribute change actually moves DPS. Take the seed and
+    /// emit four mutants — each touching only one thing — and compare scores.
+    #[test]
+    #[ignore = "loads full PoB Lua VM — run with --ignored"]
+    fn bisect_which_mutation_moves_dps() {
+        let pob_path = require_vendor!();
+        let seed_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/seed.xml");
+        let seed = std::fs::read_to_string(&seed_path).expect("seed");
+
+        let mut pob = PobHeadless::new().expect("PobHeadless::new");
+        pob.init(pob_path.to_str().unwrap()).expect("init");
+
+        let cases: Vec<(&str, String)> = vec![
+            ("seed", seed.clone()),
+            (
+                "WS quality 0->20 + defaultGemLevel=custom",
+                seed.clone()
+                    .replace(r#"defaultGemLevel="normalMaximum""#, r#"defaultGemLevel="custom""#)
+                    .replace(r#"defaultGemQuality="0""#, r#"defaultGemQuality="custom""#)
+                    .replacen(
+                        r#"level="20" enableGlobal1="true" variantId="WhirlingSlash" skillId="WhirlingSlashPlayer" quality="0""#,
+                        r#"level="20" enableGlobal1="true" variantId="WhirlingSlash" skillId="WhirlingSlashPlayer" quality="20""#,
+                        1,
+                    ),
+            ),
+            (
+                "Martial Tempo level 1->20 + defaults=custom",
+                seed.clone()
+                    .replace(r#"defaultGemLevel="normalMaximum""#, r#"defaultGemLevel="custom""#)
+                    .replace(r#"defaultGemQuality="0""#, r#"defaultGemQuality="custom""#)
+                    .replacen(
+                        r#"level="1" enableGlobal1="true" variantId="FasterAttackSupport""#,
+                        r#"level="20" enableGlobal1="true" variantId="FasterAttackSupport""#,
+                        1,
+                    ),
+            ),
+            (
+                "Concentrated Effect level 1->20 + defaults=custom",
+                seed.clone()
+                    .replace(r#"defaultGemLevel="normalMaximum""#, r#"defaultGemLevel="custom""#)
+                    .replace(r#"defaultGemQuality="0""#, r#"defaultGemQuality="custom""#)
+                    .replacen(
+                        r#"level="1" enableGlobal1="true" variantId="ConcentratedEffectSupport""#,
+                        r#"level="20" enableGlobal1="true" variantId="ConcentratedEffectSupport""#,
+                        1,
+                    ),
+            ),
+            (
+                "WS level 20->4 + defaults=custom",
+                seed.clone()
+                    .replace(r#"defaultGemLevel="normalMaximum""#, r#"defaultGemLevel="custom""#)
+                    .replace(r#"defaultGemQuality="0""#, r#"defaultGemQuality="custom""#)
+                    .replacen(
+                        r#"level="20" enableGlobal1="true" variantId="WhirlingSlash" skillId="WhirlingSlashPlayer" quality="0""#,
+                        r#"level="4" enableGlobal1="true" variantId="WhirlingSlash" skillId="WhirlingSlashPlayer" quality="0""#,
+                        1,
+                    ),
+            ),
+            (
+                "defaultGemLevel=characterLevel (no other changes)",
+                seed.clone()
+                    .replace(r#"defaultGemLevel="normalMaximum""#, r#"defaultGemLevel="characterLevel""#),
+            ),
+        ];
+
+        let mut baseline = 0.0;
+        for (label, xml) in &cases {
+            pob.load_build_xml(xml).expect(label);
+            let stats = pob.calculate().expect(label);
+            if label == &"seed" {
+                baseline = stats.total_dps;
+            }
+            let pct = if baseline > 0.0 { ((stats.total_dps / baseline) - 1.0) * 100.0 } else { 0.0 };
+            eprintln!("{:<55}  DPS={:>12.2}   {:+.2}%", label, stats.total_dps, pct);
+        }
+    }
+
+    /// Sanity-check: load the cascade's *actual* m1 XML (dumped from the
+    /// archive) and verify whether its score differs from the seed. The
+    /// cascade reported 49,200 DPS for m1 (Whirling Slash level=20 quality=20)
+    /// despite the seed only having quality=0 — investigating why.
+    #[test]
+    #[ignore = "loads full PoB Lua VM — run with --ignored"]
+    fn cascade_m1_xml_score_vs_seed() {
+        let pob_path = require_vendor!();
+        let seed_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/seed.xml");
+        let seed = std::fs::read_to_string(&seed_path).expect("seed");
+
+        let m1_path = std::path::PathBuf::from(std::env::var("TEMP").unwrap_or_default())
+            .join("m1.xml");
+        if !m1_path.exists() {
+            eprintln!("skipping: dump %TEMP%/m1.xml from the archive first");
+            return;
+        }
+        let m1 = std::fs::read_to_string(&m1_path).expect("m1 dump");
+
+        let mut pob = PobHeadless::new().expect("PobHeadless::new");
+        pob.init(pob_path.to_str().unwrap()).expect("init");
+
+        pob.load_build_xml(&seed).expect("load seed");
+        let baseline = pob.calculate().expect("calc seed");
+        eprintln!("SEED   DPS={:.4}", baseline.total_dps);
+
+        pob.load_build_xml(&m1).expect("load m1");
+        let mutated = pob.calculate().expect("calc m1");
+        eprintln!("M1     DPS={:.4}", mutated.total_dps);
+
+        let pct = ((mutated.total_dps / baseline.total_dps) - 1.0) * 100.0;
+        eprintln!("m1 / seed = {pct:+.2}%");
+    }
+
+    /// Empirical check: does PoB actually respect the per-gem `level=` and
+    /// `quality=` attributes in the XML, or does the build-wide
+    /// `defaultGemLevel="normalMaximum"` clobber them?
+    ///
+    /// We load the workspace's seed.xml, score it, then load a mutant where
+    /// every gem on the main socket group is level=1 + quality=0 and the
+    /// Skills container declares `defaultGemLevel="custom"`. If PoB respects
+    /// per-gem overrides, the mutant should score WAY lower DPS.
+    #[test]
+    #[ignore = "loads full PoB Lua VM — run with --ignored"]
+    fn per_gem_level_quality_actually_affects_score() {
+        let pob_path = require_vendor!();
+        let seed_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/seed.xml");
+        let seed = std::fs::read_to_string(&seed_path).expect("seed.xml at tests/fixtures/");
+
+        let mut pob = PobHeadless::new().expect("PobHeadless::new");
+        pob.init(pob_path.to_str().unwrap()).expect("init");
+        pob.load_build_xml(&seed).expect("load seed");
+        let baseline = pob.calculate().expect("calculate seed");
+        eprintln!("BASELINE DPS={:.2}", baseline.total_dps);
+
+        // Mutant: same seed but with defaultGemLevel="custom" + every level=20
+        // turned into level=4 on the main skill (Whirling Slash). Should score
+        // drastically lower DPS if the mutation is respected.
+        let mutant = seed
+            .replace(r#"defaultGemLevel="normalMaximum""#, r#"defaultGemLevel="custom""#)
+            .replace(r#"defaultGemQuality="0""#, r#"defaultGemQuality="custom""#)
+            // Whirling Slash starts at level=20 → drop to level=4
+            .replacen(
+                r#"level="20" enableGlobal1="true" variantId="WhirlingSlash""#,
+                r#"level="4" enableGlobal1="true" variantId="WhirlingSlash""#,
+                1,
+            )
+            // Berserk starts at level=20 → drop to level=4
+            .replacen(
+                r#"level="20" enableGlobal1="true" variantId="Berserk""#,
+                r#"level="4" enableGlobal1="true" variantId="Berserk""#,
+                1,
+            );
+
+        pob.load_build_xml(&mutant).expect("load mutant");
+        let mutated = pob.calculate().expect("calculate mutant");
+        eprintln!("MUTANT DPS={:.2} (Whirling Slash + Berserk dropped to level=4)", mutated.total_dps);
+
+        // The whole point: if PoB respects per-gem levels, dropping the main
+        // skill from 20→4 should significantly drop DPS. >5% drop is enough.
+        let pct_drop = 1.0 - (mutated.total_dps / baseline.total_dps);
+        eprintln!("relative drop: {:.1}%", pct_drop * 100.0);
+        assert!(
+            pct_drop > 0.05,
+            "per-gem level/quality override is NOT being respected by PoB \
+             (baseline={:.2}, mutant={:.2}, drop={:.2}%). The mutation applier \
+             needs a different mechanism to make builds score distinctly.",
+            baseline.total_dps,
+            mutated.total_dps,
+            pct_drop * 100.0
+        );
+    }
 }

@@ -27,6 +27,17 @@ use tier3::Tier3Backend;
 
 pub mod mutate;
 
+/// Cheap non-cryptographic 64-bit hash for "did this string change" diffs in
+/// trace logs. FNV-1a — no extra deps, distinguishes 1-char changes reliably.
+fn simple_hash(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
 #[derive(Debug, Error)]
 pub enum CoreError {
     #[error("tier-3 backend error: {0}")]
@@ -57,8 +68,14 @@ impl Default for StepConfig {
     fn default() -> Self {
         Self {
             mutations_per_step: 8,
-            interest_threshold: 0.4,
-            plausibility_threshold: 0.5,
+            // Lowered from 0.4/0.5 — the surrogate's cheap-score is too
+            // aggressive for our use case: it kills "boring" mutations like
+            // "Whirling Slash quality 0→20" which actually move DPS, while
+            // letting through "novel" cosmetic swaps that don't. Until we
+            // have a better Tier-2 judge, let almost everything through and
+            // let Tier-3 + the MAP-Elites elite check do the filtering.
+            interest_threshold: 0.1,
+            plausibility_threshold: 0.2,
             data_version: "pob2:unknown".to_string(),
         }
     }
@@ -175,9 +192,21 @@ impl SearchEngine {
         let survivors: Vec<MutationProposal> = survivors
             .into_iter()
             .map(|mut p| {
+                let before_len = p.pob_xml.len();
+                let before_hash = simple_hash(&p.pob_xml);
                 if !p.ops.is_empty() {
                     p.pob_xml = mutate::apply_ops_to_xml(&p.pob_xml, &p.ops);
                 }
+                let after_hash = simple_hash(&p.pob_xml);
+                tracing::info!(
+                    variant = %p.variant_id,
+                    ops_count = p.ops.len(),
+                    xml_changed = before_hash != after_hash,
+                    xml_len_before = before_len,
+                    xml_len_after = p.pob_xml.len(),
+                    ops = ?p.ops,
+                    "mutation applied"
+                );
                 p
             })
             .collect();
