@@ -20,7 +20,7 @@ const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 pub enum DreamerError {
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
-    #[error("anthropic returned non-OK: {status} — {body}")]
+    #[error("tier-1 endpoint returned non-OK: {status} — {body}")]
     BadStatus { status: u16, body: String },
     #[error("schema mismatch: {0}")]
     Schema(String),
@@ -73,7 +73,10 @@ pub struct Finalist {
     /// Headline numbers cherry-picked from BuildStats — what to show in the
     /// card without making the user click through.
     pub key_stats: Vec<KeyStat>,
-    /// `~base64(zlib(pob_xml))` — paste into PoB2 Import.
+    /// `~base64(zlib(pob_xml))` — paste into PoB2 Import. Tier-5 models DO
+    /// NOT echo this (ten codes ≈ 90K input + 40K output tokens — truncation
+    /// guaranteed); the engine re-attaches it by `variant_id` after parsing.
+    #[serde(default)]
     pub pob_import_code: String,
     /// SPEC §1.1 — leveling + endgame + dual-loadout guide. Optional in the
     /// schema (old payloads parse) but REQUIRED for end-state finalists; the
@@ -271,8 +274,10 @@ mod prompts {
                       \n\nOutput ONLY valid JSON. No prose outside the JSON. No markdown fences. \
                       Be ruthless about distinct identities — don't return two finalists that \
                       play the same. Prefer variety across damage type, defense layer, role. \
-                      Borrow the `pob_import_code`, `variant_id`, and `cell` values from the \
-                      frontier entry you're describing — DO NOT invent new ones. \
+                      Borrow the `variant_id` and `cell` values from the frontier entry \
+                      you're describing — DO NOT invent new ones. NEVER echo the \
+                      `pob_import_code` field: the engine re-attaches it by variant_id, \
+                      and echoing ten codes truncates your reply mid-JSON. \
                       \n\nEvery finalist MUST include a `guide` object (SPEC §1.1): \
                       `leveling` (act milestones, early skills, gem/passive order, respec points), \
                       `endgame` (final tree direction, gear priorities, breakpoints), and \
@@ -283,7 +288,7 @@ mod prompts {
         let user = format!(
             "Frontier (Tier 4 pruned, ready for curation):\n{}\n\n\
              Return JSON of shape:\n\
-             {{\n  \"finalists\": [\n    {{\n      \"variant_id\": \"<copy from frontier>\",\n      \"title\": \"a short evocative name, like 'Cold DoT Tank Witch'\",\n      \"one_liner\": \"one sentence — what's the build do?\",\n      \"why_it_works\": \"2–4 sentences. Mechanical reasoning. Why this combo of skill/support/defense layer is good.\",\n      \"tags\": [\"cold\", \"DoT\", \"ES-stack\", \"boss-killer\"],\n      \"cell\": \"<copy from frontier>\",\n      \"key_stats\": [\n        {{\"label\": \"DPS\", \"value\": \"4.2M\"}},\n        {{\"label\": \"EHP\", \"value\": \"24k\"}},\n        {{\"label\": \"Resist\", \"value\": \"75/75/75\"}}\n      ],\n      \"pob_import_code\": \"<copy from frontier>\",\n      \"guide\": {{\n        \"leveling\": \"act-by-act milestones: which skills carry acts 1–3, gem order, passive priorities, when to respec into the final form\",\n        \"endgame\": \"final tree direction, gear priorities by slot, breakpoints to hit (resists, attributes, spirit)\",\n        \"loadout_swap\": \"clear vs boss: what lives in weapon set 1 vs weapon set 2, which passives to bind per set — or an explicit statement that this build can't dual-loadout cleanly and why\",\n        \"playtest_notes\": \"what PoB can't verify here — feel, clunk, on-death effects\"\n      }}\n    }}\n  ]\n}}",
+             {{\n  \"finalists\": [\n    {{\n      \"variant_id\": \"<copy from frontier>\",\n      \"title\": \"a short evocative name, like 'Cold DoT Tank Witch'\",\n      \"one_liner\": \"one sentence — what's the build do?\",\n      \"why_it_works\": \"2–4 sentences. Mechanical reasoning. Why this combo of skill/support/defense layer is good.\",\n      \"tags\": [\"cold\", \"DoT\", \"ES-stack\", \"boss-killer\"],\n      \"cell\": \"<copy from frontier>\",\n      \"key_stats\": [\n        {{\"label\": \"DPS\", \"value\": \"4.2M\"}},\n        {{\"label\": \"EHP\", \"value\": \"24k\"}},\n        {{\"label\": \"Resist\", \"value\": \"75/75/75\"}}\n      ],\n      \"guide\": {{\n        \"leveling\": \"act-by-act milestones: which skills carry acts 1–3, gem order, passive priorities, when to respec into the final form\",\n        \"endgame\": \"final tree direction, gear priorities by slot, breakpoints to hit (resists, attributes, spirit)\",\n        \"loadout_swap\": \"clear vs boss: what lives in weapon set 1 vs weapon set 2, which passives to bind per set — or an explicit statement that this build can't dual-loadout cleanly and why\",\n        \"playtest_notes\": \"what PoB can't verify here — feel, clunk, on-death effects\"\n      }}\n    }}\n  ]\n}}",
             serde_json::to_string_pretty(frontier_snapshot).unwrap_or_default(),
         );
         (system, user)
@@ -401,12 +406,14 @@ impl OpenAiCompatDriver {
     }
 
     /// Gemini via Google AI Studio's OpenAI-compat endpoint. Free tier (no
-    /// card). Default model is full flash (not -lite): Tier-5 guides are
-    /// long structured prose and the quality step up matters there.
+    /// card). Default is flash-LITE: full flash 503-gated twice in one
+    /// afternoon ("high demand") while lite answered every call — for an
+    /// unattended pipeline, reliability beats the quality step. Override
+    /// with MOSSRAVEN_T1_MODEL=gemini-2.5-flash when it's healthy.
     pub fn gemini_default(api_key: String) -> Self {
         Self::new(
             "https://generativelanguage.googleapis.com/v1beta/openai",
-            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
             Some(api_key),
         )
     }
@@ -417,6 +424,15 @@ impl OpenAiCompatDriver {
     }
 
     async fn message(&self, system: &str, user: &str) -> Result<String, DreamerError> {
+        self.message_with_max(system, user, self.max_tokens).await
+    }
+
+    async fn message_with_max(
+        &self,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, DreamerError> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let body = json!({
             "model": self.model,
@@ -425,7 +441,7 @@ impl OpenAiCompatDriver {
                 { "role": "user",   "content": user },
             ],
             "temperature": 0.4,
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens,
             "stream": false,
         });
         let mut req = self.http.post(&url).json(&body);
@@ -484,7 +500,10 @@ impl TierOneDriver for OpenAiCompatDriver {
         frontier_snapshot: &Value,
     ) -> Result<Vec<Finalist>, DreamerError> {
         let (system, user) = prompts::synthesize(frontier_snapshot);
-        let raw = self.message(system, &user).await?;
+        // Ten finalists × four-section guides ≈ 12–14K output tokens — the
+        // default 8K budget truncated Gemini mid-JSON. flash supports 65K
+        // out, llama-3.3 32K; 24K covers the worst case with headroom.
+        let raw = self.message_with_max(system, &user, 24_576).await?;
         parse_finalists(&raw)
     }
 }

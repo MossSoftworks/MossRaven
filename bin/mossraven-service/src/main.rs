@@ -1017,8 +1017,54 @@ impl ControlSurface for ServiceControlSurface {
     /// Code / Cowork) does the synthesis itself.
     async fn synthesize_finalists(&self) -> Result<Value, McpError> {
         let frontier = self.get_frontier().await?;
-        match self.ctx.dreamer.synthesize_finalists(&frontier).await {
-            Ok(finalists) => {
+        // The model needs codes as neither input nor output — ten ~11 KB
+        // codes are ~90K tokens of input (blew Groq's 12K TPM free limit
+        // with a 413) and truncate any model that echoes them back. Send a
+        // slim frontier; codes re-attach by variant_id below.
+        let slim_frontier = {
+            let mut f = frontier.clone();
+            if let Some(arr) = f.get_mut("frontier").and_then(|x| x.as_array_mut()) {
+                for e in arr {
+                    if let Some(obj) = e.as_object_mut() {
+                        obj.remove("pob_import_code");
+                    }
+                }
+            }
+            f
+        };
+        match self.ctx.dreamer.synthesize_finalists(&slim_frontier).await {
+            Ok(mut finalists) => {
+                // Models OMIT pob_import_code (echoing ten ~11 KB codes blows
+                // any output budget and truncates the JSON — observed live on
+                // Gemini). Re-attach by variant_id from the frontier we just
+                // built; unknown variant_ids keep an empty code and get a WARN
+                // so a hallucinated finalist can't carry a wrong build.
+                let code_by_variant: std::collections::HashMap<String, String> = frontier
+                    .get("frontier")
+                    .and_then(|f| f.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|e| {
+                                Some((
+                                    e.get("variant_id")?.as_str()?.to_string(),
+                                    e.get("pob_import_code")?.as_str()?.to_string(),
+                                ))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for f in &mut finalists {
+                    if f.pob_import_code.is_empty() {
+                        match code_by_variant.get(&f.variant_id) {
+                            Some(code) => f.pob_import_code = code.clone(),
+                            None => tracing::warn!(
+                                variant = %f.variant_id,
+                                title = %f.title,
+                                "finalist references a variant not on the frontier; no import code attached"
+                            ),
+                        }
+                    }
+                }
                 // Mode A: persist immediately — the files ARE the deliverable
                 // (SPEC §1.1). A persistence failure is logged but doesn't
                 // void the synthesis.
