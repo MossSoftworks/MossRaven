@@ -94,8 +94,10 @@ fn parse_args() -> Args {
                      MOSSRAVEN_POOL_SIZE              Local Tier-3 PobParser workers (default 1, cap min(cores/2, 8))\n    \
                      MOSSRAVEN_NODE_URLS              Comma-separated mossraven-node URLs — switches Tier-3 to REMOTE\n    \
                      MOSSRAVEN_NODE_BEARER            Bearer for remote nodes (default: dev bearer)\n    \
-                     MOSSRAVEN_ANTHROPIC_API_KEY      Enables Mode A Tier-1 driver\n    \
+                     MOSSRAVEN_ANTHROPIC_API_KEY      Tier-1/5 driver: Anthropic (best guides)\n    \
                      MOSSRAVEN_ANTHROPIC_MODEL        Default: claude-sonnet-4-5\n    \
+                     MOSSRAVEN_T1_BASE_URL/_MODEL[/_API_KEY]  Tier-1/5 driver: any OpenAI-compat (Ollama etc.)\n    \
+                     (no T1 key? GEMINI_API_KEY or GROQ_API_KEY also drive Tier-1/5 — free solo Mode A)\n    \
                      CEREBRAS_API_KEY               Tier-2 surrogate provider (free tier)\n    \
                      CEREBRAS_MODEL                 Default: gpt-oss-120b\n    \
                      CEREBRAS_BASE_URL              Default: https://api.cerebras.ai/v1\n    \
@@ -505,17 +507,40 @@ async fn build_context(pob_path: &str) -> Context {
         };
 
     // Dreamer: Mode A if MOSSRAVEN_ANTHROPIC_API_KEY is set, external otherwise.
-    let dreamer: Arc<dyn TierOneDriver> = match std::env::var("MOSSRAVEN_ANTHROPIC_API_KEY") {
-        Ok(key) if !key.is_empty() => {
-            let model = std::env::var("MOSSRAVEN_ANTHROPIC_MODEL")
-                .unwrap_or_else(|_| "claude-sonnet-4-5".to_string());
-            tracing::info!(model = %model, "AnthropicApiDriver active (Mode A)");
-            Arc::new(AnthropicApiDriver::new(model, key))
-        }
-        _ => {
-            tracing::info!("MOSSRAVEN_ANTHROPIC_API_KEY not set; Mode B (Claude Code drives via MCP)");
-            Arc::new(ExternalMcpDriver)
-        }
+    // Tier-1/Tier-5 driver, in priority order:
+    //   1. Anthropic (MOSSRAVEN_ANTHROPIC_API_KEY) — highest guide quality.
+    //   2. Explicit OpenAI-compat (MOSSRAVEN_T1_BASE_URL + MOSSRAVEN_T1_MODEL
+    //      [+ MOSSRAVEN_T1_API_KEY]) — point at anything, incl. local Ollama.
+    //   3. Gemini free tier (GEMINI_API_KEY; full flash, not -lite — guides
+    //      are long structured prose and the quality step matters).
+    //   4. Groq free tier (GROQ_API_KEY; llama-3.3-70b).
+    //   5. External (Mode B) — Claude Code / Cowork drives via MCP.
+    // 2–4 make fully-solo Mode A possible with zero Anthropic spend.
+    let dreamer: Arc<dyn TierOneDriver> = if let Some(key) =
+        env_nonempty("MOSSRAVEN_ANTHROPIC_API_KEY")
+    {
+        let model = std::env::var("MOSSRAVEN_ANTHROPIC_MODEL")
+            .unwrap_or_else(|_| "claude-sonnet-4-5".to_string());
+        tracing::info!(model = %model, "Tier-1/5 driver: anthropic (Mode A)");
+        Arc::new(AnthropicApiDriver::new(model, key))
+    } else if let (Some(url), Some(model)) =
+        (env_nonempty("MOSSRAVEN_T1_BASE_URL"), env_nonempty("MOSSRAVEN_T1_MODEL"))
+    {
+        tracing::info!(model = %model, base_url = %url, "Tier-1/5 driver: openai-compat (Mode A)");
+        Arc::new(mossraven_dreamer::OpenAiCompatDriver::new(
+            url,
+            model,
+            env_nonempty("MOSSRAVEN_T1_API_KEY"),
+        ))
+    } else if let Some(key) = env_nonempty("GEMINI_API_KEY") {
+        tracing::info!("Tier-1/5 driver: gemini free tier (Mode A)");
+        Arc::new(mossraven_dreamer::OpenAiCompatDriver::gemini_default(key))
+    } else if let Some(key) = env_nonempty("GROQ_API_KEY") {
+        tracing::info!("Tier-1/5 driver: groq free tier (Mode A)");
+        Arc::new(mossraven_dreamer::OpenAiCompatDriver::groq_default(key))
+    } else {
+        tracing::info!("no Tier-1 key set; Mode B (Claude Code drives via MCP)");
+        Arc::new(ExternalMcpDriver)
     };
 
     // Tier-3 backend selection, in priority order (SPEC §4.3):

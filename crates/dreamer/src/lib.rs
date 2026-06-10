@@ -228,9 +228,13 @@ impl AnthropicApiDriver {
     }
 }
 
-#[async_trait]
-impl TierOneDriver for AnthropicApiDriver {
-    async fn seed(&self, prompt: &str) -> Result<Hypothesis, DreamerError> {
+/// Tier-1/Tier-5 prompt builders — shared verbatim by every API-backed driver
+/// (Anthropic, OpenAI-compat) so swapping the LLM vendor never changes what
+/// we ask for.
+mod prompts {
+    use serde_json::Value;
+
+    pub fn seed(prompt: &str) -> (&'static str, String) {
         let system = "You are a Path of Exile 2 build theorycrafter. \
                       Output ONLY valid JSON. No prose, no markdown fences. \
                       Given a free-text build concept, return a structured hypothesis \
@@ -241,14 +245,10 @@ impl TierOneDriver for AnthropicApiDriver {
              Return JSON of shape:\n\
              {{\n  \"concept\": \"a refined one-line concept statement\",\n  \"rationale\": \"why this might work, mechanically grounded\",\n  \"initial_cell_focus\": \"damage_type/defense_layer/role/scaling_vector — the MAP-Elites cell to anchor at\"\n}}",
         );
-        let raw = self.message(system, &user).await?;
-        Self::parse_hypothesis(&raw)
+        (system, user)
     }
 
-    async fn curate(
-        &self,
-        archive_snapshot: &Value,
-    ) -> Result<Hypothesis, DreamerError> {
+    pub fn curate(archive_snapshot: &Value) -> (&'static str, String) {
         let system = "You are a Path of Exile 2 build theorycrafter looking at a MAP-Elites \
                       archive. Output ONLY valid JSON. No prose. \
                       Read what's been filled in. Notice the GAPS — empty high-potential cells, \
@@ -260,6 +260,49 @@ impl TierOneDriver for AnthropicApiDriver {
              {{\n  \"concept\": \"the next idea to try\",\n  \"rationale\": \"what gap in the archive this fills\",\n  \"initial_cell_focus\": \"damage_type/defense_layer/role/scaling_vector\"\n}}",
             serde_json::to_string_pretty(archive_snapshot).unwrap_or_default(),
         );
+        (system, user)
+    }
+
+    pub fn synthesize(frontier_snapshot: &Value) -> (&'static str, String) {
+        let system = "You are a Path of Exile 2 build CURATOR. The search engine has produced \
+                      a frontier of mechanically-scored builds. Your job is to pick the 5–10 \
+                      most COMPELLING ones and explain — to a player who hasn't read the data — \
+                      WHY each is worth playing, and HOW to actually play it. \
+                      \n\nOutput ONLY valid JSON. No prose outside the JSON. No markdown fences. \
+                      Be ruthless about distinct identities — don't return two finalists that \
+                      play the same. Prefer variety across damage type, defense layer, role. \
+                      Borrow the `pob_import_code`, `variant_id`, and `cell` values from the \
+                      frontier entry you're describing — DO NOT invent new ones. \
+                      \n\nEvery finalist MUST include a `guide` object (SPEC §1.1): \
+                      `leveling` (act milestones, early skills, gem/passive order, respec points), \
+                      `endgame` (final tree direction, gear priorities, breakpoints), and \
+                      `loadout_swap` (clear-vs-boss duality via PoE2 weapon-set swap — which gems/sets \
+                      go in weapon set 1 vs 2; if the build can't dual-loadout cleanly, SAY SO explicitly). \
+                      In `playtest_notes`, flag what PoB can't model (clunk, animation lock, on-death) — \
+                      NEVER claim the build is fun; it is theoretically viable until played.";
+        let user = format!(
+            "Frontier (Tier 4 pruned, ready for curation):\n{}\n\n\
+             Return JSON of shape:\n\
+             {{\n  \"finalists\": [\n    {{\n      \"variant_id\": \"<copy from frontier>\",\n      \"title\": \"a short evocative name, like 'Cold DoT Tank Witch'\",\n      \"one_liner\": \"one sentence — what's the build do?\",\n      \"why_it_works\": \"2–4 sentences. Mechanical reasoning. Why this combo of skill/support/defense layer is good.\",\n      \"tags\": [\"cold\", \"DoT\", \"ES-stack\", \"boss-killer\"],\n      \"cell\": \"<copy from frontier>\",\n      \"key_stats\": [\n        {{\"label\": \"DPS\", \"value\": \"4.2M\"}},\n        {{\"label\": \"EHP\", \"value\": \"24k\"}},\n        {{\"label\": \"Resist\", \"value\": \"75/75/75\"}}\n      ],\n      \"pob_import_code\": \"<copy from frontier>\",\n      \"guide\": {{\n        \"leveling\": \"act-by-act milestones: which skills carry acts 1–3, gem order, passive priorities, when to respec into the final form\",\n        \"endgame\": \"final tree direction, gear priorities by slot, breakpoints to hit (resists, attributes, spirit)\",\n        \"loadout_swap\": \"clear vs boss: what lives in weapon set 1 vs weapon set 2, which passives to bind per set — or an explicit statement that this build can't dual-loadout cleanly and why\",\n        \"playtest_notes\": \"what PoB can't verify here — feel, clunk, on-death effects\"\n      }}\n    }}\n  ]\n}}",
+            serde_json::to_string_pretty(frontier_snapshot).unwrap_or_default(),
+        );
+        (system, user)
+    }
+}
+
+#[async_trait]
+impl TierOneDriver for AnthropicApiDriver {
+    async fn seed(&self, prompt: &str) -> Result<Hypothesis, DreamerError> {
+        let (system, user) = prompts::seed(prompt);
+        let raw = self.message(system, &user).await?;
+        Self::parse_hypothesis(&raw)
+    }
+
+    async fn curate(
+        &self,
+        archive_snapshot: &Value,
+    ) -> Result<Hypothesis, DreamerError> {
+        let (system, user) = prompts::curate(archive_snapshot);
         let raw = self.message(system, &user).await?;
         Self::parse_hypothesis(&raw)
     }
@@ -278,33 +321,9 @@ impl TierOneDriver for AnthropicApiDriver {
         // Crank max_tokens for this single call — finalists need real prose
         // (guides are paragraphs, not one-liners), so give generous headroom.
         let me = self.clone_with_max_tokens(8192);
-
-        let system = "You are a Path of Exile 2 build CURATOR. The search engine has produced \
-                      a frontier of mechanically-scored builds. Your job is to pick the 5–10 \
-                      most COMPELLING ones and explain — to a player who hasn't read the data — \
-                      WHY each is worth playing, and HOW to actually play it. \
-                      \n\nOutput ONLY valid JSON. No prose outside the JSON. No markdown fences. \
-                      Be ruthless about distinct identities — don't return two finalists that \
-                      play the same. Prefer variety across damage type, defense layer, role. \
-                      Borrow the `pob_import_code`, `variant_id`, and `cell` values from the \
-                      frontier entry you're describing — DO NOT invent new ones. \
-                      \n\nEvery finalist MUST include a `guide` object (SPEC §1.1): \
-                      `leveling` (act milestones, early skills, gem/passive order, respec points), \
-                      `endgame` (final tree direction, gear priorities, breakpoints), and \
-                      `loadout_swap` (clear-vs-boss duality via PoE2 weapon-set swap — which gems/sets \
-                      go in weapon set 1 vs 2; if the build can't dual-loadout cleanly, SAY SO explicitly). \
-                      In `playtest_notes`, flag what PoB can't model (clunk, animation lock, on-death) — \
-                      NEVER claim the build is fun; it is theoretically viable until played.";
-
-        let user = format!(
-            "Frontier (Tier 4 pruned, ready for curation):\n{}\n\n\
-             Return JSON of shape:\n\
-             {{\n  \"finalists\": [\n    {{\n      \"variant_id\": \"<copy from frontier>\",\n      \"title\": \"a short evocative name, like 'Cold DoT Tank Witch'\",\n      \"one_liner\": \"one sentence — what's the build do?\",\n      \"why_it_works\": \"2–4 sentences. Mechanical reasoning. Why this combo of skill/support/defense layer is good.\",\n      \"tags\": [\"cold\", \"DoT\", \"ES-stack\", \"boss-killer\"],\n      \"cell\": \"<copy from frontier>\",\n      \"key_stats\": [\n        {{\"label\": \"DPS\", \"value\": \"4.2M\"}},\n        {{\"label\": \"EHP\", \"value\": \"24k\"}},\n        {{\"label\": \"Resist\", \"value\": \"75/75/75\"}}\n      ],\n      \"pob_import_code\": \"<copy from frontier>\",\n      \"guide\": {{\n        \"leveling\": \"act-by-act milestones: which skills carry acts 1–3, gem order, passive priorities, when to respec into the final form\",\n        \"endgame\": \"final tree direction, gear priorities by slot, breakpoints to hit (resists, attributes, spirit)\",\n        \"loadout_swap\": \"clear vs boss: what lives in weapon set 1 vs weapon set 2, which passives to bind per set — or an explicit statement that this build can't dual-loadout cleanly and why\",\n        \"playtest_notes\": \"what PoB can't verify here — feel, clunk, on-death effects\"\n      }}\n    }}\n  ]\n}}",
-            serde_json::to_string_pretty(frontier_snapshot).unwrap_or_default(),
-        );
-
+        let (system, user) = prompts::synthesize(frontier_snapshot);
         let raw = me.message(system, &user).await?;
-        Self::parse_finalists(&raw)
+        parse_finalists(&raw)
     }
 }
 
@@ -321,36 +340,152 @@ impl AnthropicApiDriver {
         }
     }
 
-    fn parse_finalists(raw: &str) -> Result<Vec<Finalist>, DreamerError> {
-        let trimmed = raw.trim();
-        let inner = trimmed
-            .strip_prefix("```json")
-            .or_else(|| trimmed.strip_prefix("```"))
-            .map(|s| s.trim_start_matches('\n'))
-            .and_then(|s| s.rsplit_once("```").map(|(a, _)| a))
-            .unwrap_or(trimmed);
-        let v: Value = match serde_json::from_str(inner) {
-            Ok(v) => v,
-            Err(_) => {
-                let start = inner.find('{').ok_or_else(|| {
-                    DreamerError::Schema(format!("no JSON object in response: {raw}"))
-                })?;
-                serde_json::from_str(&inner[start..]).map_err(|e| {
-                    DreamerError::Schema(format!("JSON parse failed: {e} — {raw}"))
-                })?
-            }
-        };
-        let arr = v
-            .get("finalists")
-            .and_then(|f| f.as_array())
-            .ok_or_else(|| DreamerError::Schema(format!("no `finalists` array: {v}")))?;
-        let mut out = Vec::with_capacity(arr.len());
-        for entry in arr {
-            let f: Finalist = serde_json::from_value(entry.clone())
-                .map_err(|e| DreamerError::Schema(format!("finalist parse failed: {e}")))?;
-            out.push(f);
+}
+
+/// Shared response parser: pull `{"finalists": [...]}` out of a raw model
+/// reply, tolerating markdown fences and prose preambles.
+fn parse_finalists(raw: &str) -> Result<Vec<Finalist>, DreamerError> {
+    let trimmed = raw.trim();
+    let inner = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .map(|s| s.trim_start_matches('\n'))
+        .and_then(|s| s.rsplit_once("```").map(|(a, _)| a))
+        .unwrap_or(trimmed);
+    let v: Value = match serde_json::from_str(inner) {
+        Ok(v) => v,
+        Err(_) => {
+            let start = inner.find('{').ok_or_else(|| {
+                DreamerError::Schema(format!("no JSON object in response: {raw}"))
+            })?;
+            serde_json::from_str(&inner[start..]).map_err(|e| {
+                DreamerError::Schema(format!("JSON parse failed: {e} — {raw}"))
+            })?
         }
-        Ok(out)
+    };
+    let arr = v
+        .get("finalists")
+        .and_then(|f| f.as_array())
+        .ok_or_else(|| DreamerError::Schema(format!("no `finalists` array: {v}")))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for entry in arr {
+        let f: Finalist = serde_json::from_value(entry.clone())
+            .map_err(|e| DreamerError::Schema(format!("finalist parse failed: {e}")))?;
+        out.push(f);
+    }
+    Ok(out)
+}
+
+/// Tier-1/Tier-5 driver for any OpenAI-compatible chat endpoint (Google AI
+/// Studio's Gemini compat layer, Groq, local Ollama, OpenRouter...). Same
+/// prompts as the Anthropic driver — only the wire format differs. This is
+/// what makes fully-solo Mode A possible on free tiers: no Anthropic key
+/// required for hypothesis seeding or finalist synthesis.
+pub struct OpenAiCompatDriver {
+    pub base_url: String,
+    pub model: String,
+    pub api_key: Option<String>,
+    pub max_tokens: u32,
+    http: reqwest::Client,
+}
+
+impl OpenAiCompatDriver {
+    pub fn new(base_url: impl Into<String>, model: impl Into<String>, api_key: Option<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            model: model.into(),
+            api_key,
+            max_tokens: 8192,
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// Gemini via Google AI Studio's OpenAI-compat endpoint. Free tier (no
+    /// card). Default model is full flash (not -lite): Tier-5 guides are
+    /// long structured prose and the quality step up matters there.
+    pub fn gemini_default(api_key: String) -> Self {
+        Self::new(
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-2.5-flash",
+            Some(api_key),
+        )
+    }
+
+    /// Groq llama-3.3-70b. Free tier (no card).
+    pub fn groq_default(api_key: String) -> Self {
+        Self::new("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", Some(api_key))
+    }
+
+    async fn message(&self, system: &str, user: &str) -> Result<String, DreamerError> {
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let body = json!({
+            "model": self.model,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user",   "content": user },
+            ],
+            "temperature": 0.4,
+            "max_tokens": self.max_tokens,
+            "stream": false,
+        });
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            return Err(DreamerError::BadStatus {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+        let v: Value = serde_json::from_str(&text)
+            .map_err(|e| DreamerError::Schema(format!("body not JSON: {e} — {text}")))?;
+        let msg = v
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("message"))
+            .ok_or_else(|| DreamerError::Schema(format!("no choices[0].message in {text}")))?;
+        // Reasoning models park output in `reasoning` when content is empty
+        // (same quirk the Tier-2 surrogate handles).
+        let content = msg
+            .get("content")
+            .and_then(|c| c.as_str())
+            .filter(|s| !s.trim().is_empty());
+        let reasoning = msg
+            .get("reasoning")
+            .and_then(|c| c.as_str())
+            .filter(|s| !s.trim().is_empty());
+        content
+            .or(reasoning)
+            .map(str::to_string)
+            .ok_or_else(|| DreamerError::Schema(format!("no usable message content in {text}")))
+    }
+}
+
+#[async_trait]
+impl TierOneDriver for OpenAiCompatDriver {
+    async fn seed(&self, prompt: &str) -> Result<Hypothesis, DreamerError> {
+        let (system, user) = prompts::seed(prompt);
+        let raw = self.message(system, &user).await?;
+        AnthropicApiDriver::parse_hypothesis(&raw)
+    }
+
+    async fn curate(&self, archive_snapshot: &Value) -> Result<Hypothesis, DreamerError> {
+        let (system, user) = prompts::curate(archive_snapshot);
+        let raw = self.message(system, &user).await?;
+        AnthropicApiDriver::parse_hypothesis(&raw)
+    }
+
+    async fn synthesize_finalists(
+        &self,
+        frontier_snapshot: &Value,
+    ) -> Result<Vec<Finalist>, DreamerError> {
+        let (system, user) = prompts::synthesize(frontier_snapshot);
+        let raw = self.message(system, &user).await?;
+        parse_finalists(&raw)
     }
 }
 
