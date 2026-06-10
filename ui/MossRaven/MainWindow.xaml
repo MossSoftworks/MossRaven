@@ -77,9 +77,17 @@
             <!-- Content: 3-col layout. Center column is a fat draggable splitter. -->
             <Grid Grid.Row="1" Background="{DynamicResource BgBrush}">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="360" MinWidth="220"/>
+                    <!-- Star-sized so both panes scale proportionally with the window.
+                         Left starts at ~33% of width (1*), right at ~67% (2*). The
+                         splitter at column 1 lets the user override the ratio; once
+                         dragged, it becomes a fixed-pixel column until the user
+                         drags again. MinWidth keeps each pane usable on narrow
+                         windows. Previously column 0 was Width="360" (hardcoded
+                         pixels) — the left pane never grew when the user resized
+                         the window, leaving wasted space on wide monitors. -->
+                    <ColumnDefinition Width="1*" MinWidth="220"/>
                     <ColumnDefinition Width="10"/>  <!-- vertical splitter — fatter for easier grab -->
-                    <ColumnDefinition Width="*" MinWidth="320"/>
+                    <ColumnDefinition Width="2*" MinWidth="320"/>
                 </Grid.ColumnDefinitions>
 
                 <!-- LEFT PANE: top group (concept+buttons) / horizontal splitter / bottom group (service log) -->
@@ -211,9 +219,13 @@
                               Background="{DynamicResource BgBrush}"
                               Foreground="{DynamicResource TextBrush}"
                               BorderBrush="{DynamicResource DimmerBrush}"
-                              BorderThickness="1">
+                              BorderThickness="1"
+                              HorizontalContentAlignment="Stretch">
                         <Expander.Header>
-                            <DockPanel LastChildFill="False" Width="270">
+                            <!-- HorizontalAlignment=Stretch lets the header fill the Expander's
+                                 actual width, so resizing the right column shrinks/grows the
+                                 header instead of clipping at a fixed 270px. -->
+                            <DockPanel LastChildFill="False" HorizontalAlignment="Stretch" MinWidth="240">
                                 <TextBlock DockPanel.Dock="Left"
                                            Text="Tier 1 — Hypothesis"
                                            Foreground="{DynamicResource TextBrush}"
@@ -254,9 +266,13 @@
                               Background="{DynamicResource BgBrush}"
                               Foreground="{DynamicResource TextBrush}"
                               BorderBrush="{DynamicResource DimmerBrush}"
-                              BorderThickness="1">
+                              BorderThickness="1"
+                              HorizontalContentAlignment="Stretch">
                         <Expander.Header>
-                            <DockPanel LastChildFill="False" Width="270">
+                            <!-- HorizontalAlignment=Stretch lets the header fill the Expander's
+                                 actual width, so resizing the right column shrinks/grows the
+                                 header instead of clipping at a fixed 270px. -->
+                            <DockPanel LastChildFill="False" HorizontalAlignment="Stretch" MinWidth="240">
                                 <TextBlock DockPanel.Dock="Left"
                                            Text="Tier 2 — Mutations proposed"
                                            Foreground="{DynamicResource TextBrush}"
@@ -297,9 +313,13 @@
                               Background="{DynamicResource BgBrush}"
                               Foreground="{DynamicResource TextBrush}"
                               BorderBrush="{DynamicResource DimmerBrush}"
-                              BorderThickness="1">
+                              BorderThickness="1"
+                              HorizontalContentAlignment="Stretch">
                         <Expander.Header>
-                            <DockPanel LastChildFill="False" Width="270">
+                            <!-- HorizontalAlignment=Stretch lets the header fill the Expander's
+                                 actual width, so resizing the right column shrinks/grows the
+                                 header instead of clipping at a fixed 270px. -->
+                            <DockPanel LastChildFill="False" HorizontalAlignment="Stretch" MinWidth="240">
                                 <TextBlock DockPanel.Dock="Left"
                                            Text="Tier 3 — PoB sims (quant)"
                                            Foreground="{DynamicResource TextBrush}"
@@ -340,9 +360,13 @@
                               Background="{DynamicResource BgBrush}"
                               Foreground="{DynamicResource TextBrush}"
                               BorderBrush="{DynamicResource DimmerBrush}"
-                              BorderThickness="1">
+                              BorderThickness="1"
+                              HorizontalContentAlignment="Stretch">
                         <Expander.Header>
-                            <DockPanel LastChildFill="False" Width="270">
+                            <!-- HorizontalAlignment=Stretch lets the header fill the Expander's
+                                 actual width, so resizing the right column shrinks/grows the
+                                 header instead of clipping at a fixed 270px. -->
+                            <DockPanel LastChildFill="False" HorizontalAlignment="Stretch" MinWidth="240">
                                 <TextBlock DockPanel.Dock="Left"
                                            Text="Tier 4 — Pruned by interest"
                                            Foreground="{DynamicResource TextBrush}"

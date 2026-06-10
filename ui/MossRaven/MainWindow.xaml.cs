@@ -196,6 +196,26 @@ public partial class MainWindow : Window
 
     private void RenderFinalists(string payloadJson)
     {
+        // Friendly path for the service returning plain-text errors (no
+        // ANTHROPIC key, no Cerebras key in Mode B, network failure, etc.).
+        // McpServiceClient's ExtractDisplayPayload returns "ERROR: <msg>"
+        // for JSON-RPC errors — those start with 'E', not '{', so
+        // JsonDocument.Parse throws and the user sees a useless parse error.
+        // Surface the actual message instead.
+        if (payloadJson.StartsWith("ERROR:", StringComparison.Ordinal)
+            || payloadJson.StartsWith("(service not running", StringComparison.Ordinal))
+        {
+            var msg = payloadJson.Length > 240 ? payloadJson[..240] + "…" : payloadJson;
+            AppendLog($"[synthesize] {msg}");
+            Dispatcher.Invoke(() =>
+            {
+                BuildListHint.Text = payloadJson.Contains("not implemented", StringComparison.OrdinalIgnoreCase)
+                    || payloadJson.Contains("DriverIsExternal", StringComparison.OrdinalIgnoreCase)
+                    ? "Tier 5 needs MOSSRAVEN_ANTHROPIC_API_KEY in the service env (Mode A), or run from Claude Code (Mode B). Click Refresh to restore the archive view."
+                    : $"synthesize failed: {msg}";
+            });
+            return;
+        }
         try
         {
             using var doc = JsonDocument.Parse(payloadJson);
