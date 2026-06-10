@@ -11,6 +11,8 @@ function Invoke-Native {
     & $args[0] $args[1..($args.Count-1)]
     if ($LASTEXITCODE -ne 0) { throw "exit code $LASTEXITCODE" }
 }
+# Never let an exception kill the window before the transcript flushes.
+trap { Write-Host "DRUID SMOKE ERROR: $_" -ForegroundColor Red; try { Stop-Transcript } catch {}; exit 1 }
 
 # Keep this run's archive inside the repo (readable by the Cowork session)
 # instead of the production archive in %APPDATA%.
