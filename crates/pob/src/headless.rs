@@ -386,10 +386,21 @@ impl PobHeadless {
         // For EHP, we need calcsOutput
         let calcs_output: mlua::Table = calcs_tab.get("calcsOutput")?;
 
-        // Extract stats with safe defaults
-        let total_dps = main_output
-            .get::<f64>("TotalDPS")
-            .or_else(|_| main_output.get::<f64>("CombinedDPS"))
+        // Extract stats with safe defaults.
+        //
+        // DPS fallback chain — `TotalDPS` is hit-DPS of the main skill only.
+        // Trigger builds (Cast on Critical, Cast on Elemental Ailment — the
+        // standard 0.5 Tornado Druid pattern) and DoT builds report
+        // `TotalDPS=0` with the real number in `CombinedDPS` (hit+DoT) or
+        // `FullDPS` (all FullDPS-flagged skills summed). The old
+        // `.or_else()` chain only fired when the KEY was missing; a present-
+        // but-zero TotalDPS short-circuited it and every trigger build scored
+        // 0. Take the first POSITIVE value instead.
+        let dps_candidates = ["TotalDPS", "CombinedDPS", "FullDPS"];
+        let total_dps = dps_candidates
+            .iter()
+            .filter_map(|k| main_output.get::<f64>(*k).ok())
+            .find(|v| *v > 0.0)
             .unwrap_or(0.0);
 
         let life = lua_get!(main_output, "Life" => f64);

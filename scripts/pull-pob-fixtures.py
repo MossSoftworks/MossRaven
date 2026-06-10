@@ -22,6 +22,11 @@ import zlib
 
 # (pobb.in_slug, descriptive_filename_without_extension, class_ascendancy_skill_label)
 CANDIDATES = [
+    # Druid (new class in 0.5 "Return of the Ancients") — sourced from the
+    # official-forum Build of the Week thread 3891806 (poe2db.tw pastes serve
+    # /raw with the same encoding as pobb.in).
+    ("https://poe2db.tw/pob/NQJdeLUuy8", "druid-shaman-tornado", "Druid / Shaman / Tornado (mapper)"),
+    ("https://poe2db.tw/pob/YTpuJs9EJI", "druid-oracle-tornado", "Druid / Oracle / Tornado (boss nuker)"),
     ("JRM_JzYr625Y", "huntress-ritualist-whirling-slash",      "Huntress / Ritualist / Whirling Slash"),
     ("1ff_AZtMMrQY", "mercenary-tactician-galvanic-shards",   "Mercenary / Tactician / Galvanic Shards"),
     ("KCevYBaIJo8e", "warrior-warbringer-seismic-cry",         "Warrior / Warbringer / Seismic Cry"),
@@ -103,8 +108,13 @@ FIXTURES_DIR = os.path.join(
 
 
 def fetch_raw(slug: str) -> bytes:
+    # `slug` may be a bare pobb.in slug OR a full URL (poe2db.tw/pob/<id> also
+    # serves the raw code at <url>/raw with the same encoding).
+    url = slug if slug.startswith("http") else f"https://pobb.in/{slug}/raw"
+    if slug.startswith("http") and not url.endswith("/raw"):
+        url += "/raw"
     req = urllib.request.Request(
-        f"https://pobb.in/{slug}/raw",
+        url,
         headers={"User-Agent": UA, "Accept": "text/plain"},
     )
     with urllib.request.urlopen(req, timeout=15) as resp:

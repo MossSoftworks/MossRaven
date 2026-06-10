@@ -31,48 +31,94 @@ fn parse_retry_after_ms(body: &str) -> Option<u64> {
     Some((secs * 1000).min(5 * 60_000))
 }
 
-/// Find the first `<Gem nameSpec="X">` inside the `<Skill mainActiveSkill="1">`
-/// block — that's the scored active skill whose level actually moves DPS in
-/// POE2 (supports are level-agnostic). Returns None if the build XML doesn't
-/// have a `mainActiveSkill="1"` annotation or no gem under it.
-pub fn find_main_skill_gem_name(xml: &str) -> Option<String> {
-    let needle = r#"mainActiveSkill="1""#;
-    let flag_idx = xml.find(needle)?;
-    // Walk forward from `mainActiveSkill="1"` to find the first nameSpec="...".
-    // The Skill opening tag itself doesn't carry nameSpec, only its <Gem>
-    // children do.
-    let tail = &xml[flag_idx..];
-    let ns_start = tail.find(r#"nameSpec=""#)?;
-    let after_ns = ns_start + r#"nameSpec=""#.len();
-    let end_quote = tail[after_ns..].find('"')?;
-    Some(tail[after_ns..after_ns + end_quote].to_string())
+/// Byte range `[start, end)` of the scored socket group in a PoB2 build XML.
+///
+/// PoB picks the scored group via `mainSocketGroup="N"` on `<Build>` (1-based
+/// index into the `<Skill>` children of the active `<SkillSet>`). The
+/// `mainActiveSkill` attribute on each `<Skill>` is the index of the active
+/// gem *within* that group — every group carries one, so it can't identify
+/// the scored group (the original heuristic here matched the first group with
+/// `mainActiveSkill="1"`, which on real 0.5 exports is a utility group like
+/// Frost Bomb — mutations landed there and never moved CombinedDPS).
+fn main_socket_group_range(xml: &str) -> Option<(usize, usize)> {
+    let group_idx: usize = attr_in(xml, "<Build ", "mainSocketGroup")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let set_id = attr_in(xml, "<Skills ", "activeSkillSet").unwrap_or_else(|| "1".into());
+
+    // Locate the active <SkillSet id="..."> ... </SkillSet> block. Builds
+    // exported without skill sets fall back to the whole <Skills> block.
+    let needle = format!("id=\"{set_id}\"");
+    let mut set_start = None;
+    let mut cursor = 0;
+    while let Some(rel) = xml[cursor..].find("<SkillSet ") {
+        let abs = cursor + rel;
+        let tag_end = abs + xml[abs..].find('>')?;
+        if xml[abs..tag_end].contains(&needle) {
+            set_start = Some(tag_end + 1);
+            break;
+        }
+        cursor = tag_end;
+    }
+    let (region_start, region_end) = match set_start {
+        Some(s) => (s, s + xml[s..].find("</SkillSet>").unwrap_or(xml.len() - s)),
+        None => {
+            let s = xml.find("<Skills")?;
+            (s, s + xml[s..].find("</Skills>").unwrap_or(xml.len() - s))
+        }
+    };
+    let region = &xml[region_start..region_end];
+
+    // Walk <Skill ...> groups (NOT <SkillSet>) counting to group_idx.
+    let mut count = 0;
+    let mut pos = 0;
+    while let Some(rel) = region[pos..].find("<Skill ") {
+        let abs = pos + rel;
+        count += 1;
+        let body_end = abs + region[abs..].find("</Skill>").map(|e| e + "</Skill>".len())
+            .unwrap_or(region.len() - abs);
+        if count == group_idx {
+            return Some((region_start + abs, region_start + body_end));
+        }
+        pos = body_end;
+    }
+    None
 }
 
-/// Insert a comment marker before every `<Skill ... mainActiveSkill="1" ...>`
-/// block so the surrogate can see which gem group is the scored skill. PoB
-/// only reports DPS for this group; mutations to other groups (warcries,
-/// herald sources, alt skill links) apply correctly but don't move the score.
-fn annotate_main_skill(skills_block: &str) -> String {
-    let needle = r#"mainActiveSkill="1""#;
-    let mut out = String::with_capacity(skills_block.len() + 128);
-    let mut cursor = 0;
-    while let Some(rel) = skills_block[cursor..].find(needle) {
-        let abs = cursor + rel;
-        // Walk back from `mainActiveSkill="1"` to the `<Skill` that owns it.
-        let skill_start = skills_block[..abs].rfind("<Skill ").unwrap_or(abs);
-        out.push_str(&skills_block[cursor..skill_start]);
-        out.push_str("\n<!-- *** MAIN SCORED SKILL — mutations to gems IN THIS BLOCK change DPS *** -->\n");
-        // Advance cursor; the rest of the block (including the annotation
-        // anchor) gets copied normally.
-        cursor = skill_start;
-        // Avoid infinite loop if multiple skills are flagged main: jump past
-        // the needle so the next iteration looks for the NEXT main flag.
-        let after_needle = abs + needle.len();
-        out.push_str(&skills_block[cursor..after_needle]);
-        cursor = after_needle;
+/// Name of the scored active skill gem — `mainSocketGroup`'s group, gem
+/// number `mainActiveSkill` (1-based, default 1) within it. This is the gem
+/// whose `level=` actually moves PoB's reported DPS.
+pub fn find_main_skill_gem_name(xml: &str) -> Option<String> {
+    let (start, end) = main_socket_group_range(xml)?;
+    let group = &xml[start..end];
+    let gem_idx: usize = attr_in(group, "<Skill ", "mainActiveSkill")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let mut seen = 0;
+    let mut pos = 0;
+    while let Some(rel) = group[pos..].find("nameSpec=\"") {
+        let abs = pos + rel + "nameSpec=\"".len();
+        let endq = abs + group[abs..].find('"')?;
+        seen += 1;
+        if seen == gem_idx {
+            return Some(group[abs..endq].to_string());
+        }
+        pos = endq;
     }
-    out.push_str(&skills_block[cursor..]);
-    out
+    None
+}
+
+/// Value of `attr="..."` on the first occurrence of `tag_prefix` (e.g.
+/// `"<Build "`). Searches only within that tag's opening `<...>`.
+fn attr_in(xml: &str, tag_prefix: &str, attr: &str) -> Option<String> {
+    let tag_start = xml.find(tag_prefix)?;
+    let tag_end = tag_start + xml[tag_start..].find('>')?;
+    let tag = &xml[tag_start..tag_end];
+    let needle = format!("{attr}=\"");
+    let i = tag.find(&needle)?;
+    let start = i + needle.len();
+    let end = tag[start..].find('"')?;
+    Some(tag[start..start + end].to_string())
 }
 
 #[derive(Debug, Error)]
@@ -359,16 +405,25 @@ impl OpenAiCompatSurrogate {
             .to_string();
         let skills_start = xml.find("<Skills");
         let skills_end = xml.find("</Skills>");
-        let skills_block = match (skills_start, skills_end) {
-            (Some(s), Some(e)) if e > s => &xml[s..e + "</Skills>".len()],
-            _ => "",
+        let (skills_block, skills_offset) = match (skills_start, skills_end) {
+            (Some(s), Some(e)) if e > s => (&xml[s..e + "</Skills>".len()], s),
+            _ => ("", 0),
         };
-        // Annotate the main scored skill block. PoB scores the `<Skill>` that
-        // has `mainActiveSkill="1"` — every gem inside that block is on the
-        // critical path. Other blocks are warcries, herald-sources, or alt
-        // links the build uses for utility, none of which move the DPS that
-        // Tier 3 reports.
-        let annotated_skills = annotate_main_skill(skills_block);
+        // Annotate the main scored group. The group index comes from
+        // `mainSocketGroup` on `<Build>` — OUTSIDE the skills block — so the
+        // range must be computed against the FULL xml, then rebased onto the
+        // slice we're sending the model.
+        let annotated_skills = match main_socket_group_range(xml) {
+            Some((abs_start, _)) if abs_start >= skills_offset && !skills_block.is_empty() => {
+                let rel = abs_start - skills_offset;
+                let mut s = String::with_capacity(skills_block.len() + 96);
+                s.push_str(&skills_block[..rel]);
+                s.push_str("\n<!-- *** MAIN SCORED SKILL — mutations to gems IN THIS BLOCK change DPS *** -->\n");
+                s.push_str(&skills_block[rel..]);
+                s
+            }
+            _ => skills_block.to_string(),
+        };
         let combined = if class_line.is_empty() {
             annotated_skills.clone()
         } else {
@@ -642,5 +697,54 @@ impl SurrogateProvider for MockSurrogate {
                 note: None,
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod main_skill_tests {
+    use super::find_main_skill_gem_name;
+
+    /// Mirrors real 0.5 exports: every group carries mainActiveSkill="1";
+    /// the scored group is picked by mainSocketGroup on <Build>.
+    const DRUID_SHAPED: &str = r#"<PathOfBuilding2>
+<Build level="92" className="Druid" ascendClassName="Oracle" mainSocketGroup="2" viewMode="IMPORT">
+</Build>
+<Skills activeSkillSet="1" defaultGemLevel="normalMaximum">
+<SkillSet id="1">
+<Skill mainActiveSkill="1" enabled="true">
+<Gem nameSpec="Frost Bomb" level="20"/>
+<Gem nameSpec="Spell Cascade" level="1"/>
+</Skill>
+<Skill mainActiveSkill="1" enabled="true">
+<Gem nameSpec="Tornado" level="20"/>
+<Gem nameSpec="Swift Affliction II" level="1"/>
+</Skill>
+</SkillSet>
+</Skills>
+</PathOfBuilding2>"#;
+
+    #[test]
+    fn scored_gem_comes_from_main_socket_group() {
+        assert_eq!(
+            find_main_skill_gem_name(DRUID_SHAPED).as_deref(),
+            Some("Tornado"),
+            "mainSocketGroup=2 must select group 2 (Tornado), not group 1 (Frost Bomb)"
+        );
+    }
+
+    #[test]
+    fn main_active_skill_indexes_gem_within_group() {
+        let xml = DRUID_SHAPED.replace(
+            r#"<Skill mainActiveSkill="1" enabled="true">
+<Gem nameSpec="Tornado" level="20"/>"#,
+            r#"<Skill mainActiveSkill="2" enabled="true">
+<Gem nameSpec="Cast on Critical" level="20"/>
+<Gem nameSpec="Tornado" level="20"/>"#,
+        );
+        assert_eq!(
+            find_main_skill_gem_name(&xml).as_deref(),
+            Some("Tornado"),
+            "mainActiveSkill=2 must select the second gem in the group"
+        );
     }
 }

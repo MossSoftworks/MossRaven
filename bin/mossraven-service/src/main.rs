@@ -11,6 +11,8 @@
 //!    iteration without the UI. Parses `--concept` and `--generations`, runs
 //!    the cascade evaluator N times, prints the archive snapshot, exits.
 
+mod seeds;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -321,6 +323,55 @@ struct Context {
     surrogate_active: bool,
     last_hypothesis: Mutex<Option<mossraven_dreamer::Hypothesis>>,
     default_seed_xml: Option<String>,
+    /// True when default_seed_xml came from $MOSSRAVEN_SEED_XML_PATH — an
+    /// explicit user override that beats concept-grounded selection.
+    seed_from_env: bool,
+    /// Class/skill-keyed fixture index for concept→seed mapping (handoff [1]).
+    seed_library: seeds::SeedLibrary,
+}
+
+impl Context {
+    /// Resolve the seed XML for a concept. Precedence:
+    ///   1. env-pinned seed ($MOSSRAVEN_SEED_XML_PATH) — explicit override
+    ///   2. Tier-1-provided seed_pob_xml (Phase-B grounding, when live)
+    ///   3. concept-grounded library selection (class/skill keyword match)
+    ///   4. bundled default seed.xml
+    /// Returns (xml, source-label, class-name-if-known).
+    fn resolve_seed_for(
+        &self,
+        concept: &str,
+        tier1_seed: Option<String>,
+    ) -> (String, &'static str, Option<String>) {
+        if self.seed_from_env {
+            if let Some(xml) = &self.default_seed_xml {
+                return (xml.clone(), "env:MOSSRAVEN_SEED_XML_PATH", xml_class(xml));
+            }
+        }
+        if let Some(xml) = tier1_seed {
+            if !xml.trim().is_empty() {
+                let class = xml_class(&xml);
+                return (xml, "tier1:hypothesis", class);
+            }
+        }
+        if let Some(entry) = self.seed_library.select(concept) {
+            if let Ok(xml) = std::fs::read_to_string(&entry.path) {
+                return (xml, "library:concept-match", Some(entry.class_name.clone()));
+            }
+        }
+        let xml = self.default_seed_xml.clone().unwrap_or_default();
+        let class = xml_class(&xml);
+        (xml, "default:seed.xml", class)
+    }
+}
+
+/// Pull `className="X"` out of a build XML head (cheap substring scan).
+fn xml_class(xml: &str) -> Option<String> {
+    let head = &xml[..xml.len().min(4096)];
+    let needle = "className=\"";
+    let i = head.find(needle)?;
+    let start = i + needle.len();
+    let end = head[start..].find('"')?;
+    Some(head[start..start + end].to_string())
 }
 
 /// Sticky engine state — what the engine is currently mutating from.
@@ -502,26 +553,43 @@ async fn build_context(pob_path: &str) -> Context {
         .ok()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let mut seed_paths: Vec<std::path::PathBuf> = Vec::new();
+    // Env-pinned seed is an explicit override — track its origin so
+    // resolve_seed_for can rank it above concept-grounded selection.
+    let mut seed_from_env = false;
+    let mut seed_xml: Option<String> = None;
     if let Ok(p) = std::env::var("MOSSRAVEN_SEED_XML_PATH") {
-        seed_paths.push(p.into());
-    }
-    seed_paths.push(exe_dir.join("seed.xml"));
-    seed_paths.push(exe_dir.join("../crates/pob/tests/fixtures/seed.xml"));
-    seed_paths.push(std::path::PathBuf::from("crates/pob/tests/fixtures/seed.xml"));
-    let seed_xml = seed_paths.iter().find_map(|p| match std::fs::read_to_string(p) {
-        Ok(s) => {
-            tracing::info!(path = ?p, bytes = s.len(), "seed PoB XML loaded");
-            Some(s)
+        match std::fs::read_to_string(&p) {
+            Ok(s) => {
+                tracing::info!(path = %p, bytes = s.len(), "seed PoB XML loaded (env-pinned)");
+                seed_from_env = true;
+                seed_xml = Some(s);
+            }
+            Err(e) => tracing::warn!(path = %p, error = %e, "MOSSRAVEN_SEED_XML_PATH unreadable"),
         }
-        Err(_) => None,
-    });
+    }
+    if seed_xml.is_none() {
+        let fallbacks = [
+            exe_dir.join("seed.xml"),
+            exe_dir.join("../crates/pob/tests/fixtures/seed.xml"),
+            std::path::PathBuf::from("crates/pob/tests/fixtures/seed.xml"),
+        ];
+        seed_xml = fallbacks.iter().find_map(|p| match std::fs::read_to_string(p) {
+            Ok(s) => {
+                tracing::info!(path = ?p, bytes = s.len(), "seed PoB XML loaded");
+                Some(s)
+            }
+            Err(_) => None,
+        });
+    }
     if seed_xml.is_none() {
         tracing::info!(
             "no seed PoB XML found (set MOSSRAVEN_SEED_XML_PATH or drop crates/pob/tests/fixtures/seed.xml). \
              Engine will run with an empty seed — every variant in a generation scores identically."
         );
     }
+
+    // Fixture index for concept→seed mapping (handoff [1] Phase A).
+    let seed_library = seeds::SeedLibrary::discover();
 
     // Restore previously-seeded session state if present. Lets `--tool
     // seed_hypothesis` from one invocation persist into the next `--tool
@@ -551,6 +619,8 @@ async fn build_context(pob_path: &str) -> Context {
         surrogate_active,
         last_hypothesis: Mutex::new(None),
         default_seed_xml: seed_xml,
+        seed_from_env,
+        seed_library,
     }
 }
 
@@ -590,12 +660,16 @@ async fn run_headless(args: &Args, pob_path: &str) -> anyhow::Result<()> {
     *ctx.last_hypothesis.lock() = Some(hypothesis.clone());
 
     // Push the hypothesis into engine state so engine.step() has something to mutate.
-    // Seed XML precedence: hypothesis.seed_pob_xml (from Tier 1) → default loaded at startup.
-    let seed_xml = hypothesis
-        .seed_pob_xml
-        .clone()
-        .or_else(|| ctx.default_seed_xml.clone())
-        .unwrap_or_default();
+    // Seed resolution: env override → Tier-1 grounding → concept-matched library
+    // seed → bundled default. See Context::resolve_seed_for.
+    let (seed_xml, seed_source, seed_class) =
+        ctx.resolve_seed_for(&hypothesis.concept, hypothesis.seed_pob_xml.clone());
+    tracing::info!(
+        source = seed_source,
+        class = seed_class.as_deref().unwrap_or("?"),
+        bytes = seed_xml.len(),
+        "seed resolved for headless run"
+    );
     ctx.engine.set_state(
         hypothesis.concept.clone(),
         hypothesis.rationale.clone(),
@@ -699,12 +773,17 @@ impl ControlSurface for ServiceControlSurface {
             Err(e) => return Err(McpError::ToolFailed(e.to_string())),
         };
         *self.ctx.last_hypothesis.lock() = Some(hypothesis.clone());
-        // Seed XML precedence: dreamer's seed_pob_xml → service-loaded default → empty.
-        let seed_xml = hypothesis
-            .seed_pob_xml
-            .clone()
-            .or_else(|| self.ctx.default_seed_xml.clone())
-            .unwrap_or_default();
+        // Seed resolution: env override → Tier-1 grounding → concept-matched
+        // library seed → bundled default. See Context::resolve_seed_for.
+        let (seed_xml, seed_source, seed_class) = self
+            .ctx
+            .resolve_seed_for(&hypothesis.concept, hypothesis.seed_pob_xml.clone());
+        tracing::info!(
+            source = seed_source,
+            class = seed_class.as_deref().unwrap_or("?"),
+            bytes = seed_xml.len(),
+            "seed resolved for hypothesis"
+        );
         self.ctx.engine.set_state(
             hypothesis.concept.clone(),
             hypothesis.rationale.clone(),
@@ -722,7 +801,15 @@ impl ControlSurface for ServiceControlSurface {
         if let Err(e) = session.save(&self.ctx.session_path) {
             tracing::warn!(error = %e, "session state save failed");
         }
-        Ok(serde_json::to_value(hypothesis).unwrap())
+        let mut out = serde_json::to_value(&hypothesis).unwrap();
+        if let Some(obj) = out.as_object_mut() {
+            // Strip the (potentially huge) seed XML out of the reply — the
+            // engine has it; callers only need to know what was picked.
+            obj.remove("seed_pob_xml");
+            obj.insert("seed_source".into(), json!(seed_source));
+            obj.insert("seed_class".into(), json!(seed_class));
+        }
+        Ok(out)
     }
 
     async fn run_search(&self, generations: u32, region: Option<String>) -> Result<Value, McpError> {
