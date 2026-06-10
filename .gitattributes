@@ -1,0 +1,10 @@
+# Normalize line endings in-repo; checkout uses platform defaults.
+# Added 2026-06-10 to end phantom whole-file CRLF diffs between the
+# Windows checkout and Linux-side tooling.
+* text=auto
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.ico binary
+*.zip binary
