@@ -67,11 +67,19 @@ pub struct Finalist {
     pub why_it_works: String,
     /// 2–5 short tags that describe the build's identity, e.g.
     /// "cold DoT", "ES stacker", "boss-killer", "low-budget".
+    /// Serde-defaulted: prose-adjacent fields are whatever the model felt
+    /// like emitting that day — never let one omission void a synthesis.
+    #[serde(default)]
     pub tags: Vec<String>,
-    /// The cell coords as a slash-string for grouping the UI.
+    /// The cell coords as a slash-string for grouping the UI. Defaulted —
+    /// observed omitted live (gemini-2.5-flash-lite); the engine backfills
+    /// it from the frontier by `variant_id`, same as `pob_import_code`.
+    #[serde(default)]
     pub cell: String,
     /// Headline numbers cherry-picked from BuildStats — what to show in the
-    /// card without making the user click through.
+    /// card without making the user click through. Defaulted; engine
+    /// backfills DPS/EHP/ES from frontier stats when empty.
+    #[serde(default)]
     pub key_stats: Vec<KeyStat>,
     /// `~base64(zlib(pob_xml))` — paste into PoB2 Import. Tier-5 models DO
     /// NOT echo this (ten codes ≈ 90K input + 40K output tokens — truncation

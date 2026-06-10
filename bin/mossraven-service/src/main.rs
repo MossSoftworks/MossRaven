@@ -1040,30 +1040,53 @@ impl ControlSurface for ServiceControlSurface {
                 // Gemini). Re-attach by variant_id from the frontier we just
                 // built; unknown variant_ids keep an empty code and get a WARN
                 // so a hallucinated finalist can't carry a wrong build.
-                let code_by_variant: std::collections::HashMap<String, String> = frontier
+                let entry_by_variant: std::collections::HashMap<String, &Value> = frontier
                     .get("frontier")
                     .and_then(|f| f.as_array())
                     .map(|arr| {
                         arr.iter()
-                            .filter_map(|e| {
-                                Some((
-                                    e.get("variant_id")?.as_str()?.to_string(),
-                                    e.get("pob_import_code")?.as_str()?.to_string(),
-                                ))
-                            })
+                            .filter_map(|e| Some((e.get("variant_id")?.as_str()?.to_string(), e)))
                             .collect()
                     })
                     .unwrap_or_default();
                 for f in &mut finalists {
+                    let Some(entry) = entry_by_variant.get(&f.variant_id) else {
+                        tracing::warn!(
+                            variant = %f.variant_id,
+                            title = %f.title,
+                            "finalist references a variant not on the frontier; nothing backfilled"
+                        );
+                        continue;
+                    };
                     if f.pob_import_code.is_empty() {
-                        match code_by_variant.get(&f.variant_id) {
-                            Some(code) => f.pob_import_code = code.clone(),
-                            None => tracing::warn!(
-                                variant = %f.variant_id,
-                                title = %f.title,
-                                "finalist references a variant not on the frontier; no import code attached"
-                            ),
+                        if let Some(code) = entry.get("pob_import_code").and_then(|c| c.as_str()) {
+                            f.pob_import_code = code.to_string();
                         }
+                    }
+                    // `cell` and `key_stats` are serde-defaulted for the same
+                    // reason as the import code: models drop fields. Ground
+                    // truth lives on the frontier — backfill, don't trust.
+                    if f.cell.is_empty() {
+                        if let Some(cell) = entry.get("cell").and_then(|c| c.as_str()) {
+                            f.cell = cell.to_string();
+                        }
+                    }
+                    if f.key_stats.is_empty() {
+                        let stat = |k: &str| entry.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        f.key_stats = vec![
+                            mossraven_dreamer::KeyStat {
+                                label: "DPS".into(),
+                                value: format!("{:.0}", stat("total_dps")),
+                            },
+                            mossraven_dreamer::KeyStat {
+                                label: "EHP".into(),
+                                value: format!("{:.0}", stat("effective_hp")),
+                            },
+                            mossraven_dreamer::KeyStat {
+                                label: "Energy Shield".into(),
+                                value: format!("{:.0}", stat("energy_shield")),
+                            },
+                        ];
                     }
                 }
                 // Mode A: persist immediately — the files ARE the deliverable
