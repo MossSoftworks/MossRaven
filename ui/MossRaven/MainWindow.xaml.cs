@@ -161,7 +161,233 @@ public partial class MainWindow : Window
 
     private async void RefreshArchiveButton_Click(object sender, RoutedEventArgs e)
     {
+        // Refresh always returns to the live archive view.
+        FinalistHistoryScroller.Visibility = Visibility.Collapsed;
+        BuildList.Visibility = Visibility.Visible;
+        FinalistHistoryButton.Content = "History";
         await RefreshArchiveAsync();
+    }
+
+    // ----- Tier-5 history (saved finalists runs) -----
+
+    private static string FinalistsRootDir() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "Moss", "MossRaven", "data", "finalists");
+
+    /// <summary>
+    /// Toggle between the live archive view and the saved-runs history.
+    /// History re-scans the finalists dir on every open (runs are small;
+    /// a watcher would be overkill).
+    /// </summary>
+    private void FinalistHistoryButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (FinalistHistoryScroller.Visibility == Visibility.Visible)
+        {
+            FinalistHistoryScroller.Visibility = Visibility.Collapsed;
+            BuildList.Visibility = Visibility.Visible;
+            FinalistHistoryButton.Content = "History";
+            BuildListHint.Text = "Click a build to copy its PoB import code to clipboard.";
+            return;
+        }
+        LoadFinalistHistory();
+        BuildList.Visibility = Visibility.Collapsed;
+        FinalistHistoryScroller.Visibility = Visibility.Visible;
+        FinalistHistoryButton.Content = "Archive";
+        BuildListHint.Text = "Expand a run, click a build for its full guide (PoB code copies from the detail window).";
+    }
+
+    private void LoadFinalistHistory()
+    {
+        FinalistHistoryPanel.Children.Clear();
+        var root = FinalistsRootDir();
+        List<string> runDirs;
+        try
+        {
+            runDirs = Directory.Exists(root)
+                ? new List<string>(Directory.GetDirectories(root))
+                : new List<string>();
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"[history] scan failed: {ex.Message}");
+            runDirs = new List<string>();
+        }
+        // Dir names are unix timestamps — numeric sort, newest first.
+        runDirs.Sort((a, b) =>
+        {
+            long ta = long.TryParse(Path.GetFileName(a), out var x) ? x : 0;
+            long tb = long.TryParse(Path.GetFileName(b), out var y) ? y : 0;
+            return tb.CompareTo(ta);
+        });
+
+        if (runDirs.Count == 0)
+        {
+            FinalistHistoryPanel.Children.Add(new TextBlock
+            {
+                Text = "No saved runs yet — Synthesize (or a Mode-B save_finalists) writes one per run.",
+                FontSize = 12,
+                Margin = new Thickness(10, 12, 10, 0),
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = (Brush)FindResource("DimBrush"),
+            });
+            return;
+        }
+
+        bool first = true;
+        foreach (var dir in runDirs)
+        {
+            var expander = BuildRunExpander(dir, expandByDefault: first);
+            if (expander != null)
+            {
+                FinalistHistoryPanel.Children.Add(expander);
+                first = false;
+            }
+        }
+    }
+
+    /// <summary>One saved run → an Expander headed by time + summary, containing one clickable row per finalist.</summary>
+    private Expander? BuildRunExpander(string runDir, bool expandByDefault)
+    {
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(runDir, "finalists.json")));
+        }
+        catch
+        {
+            return null; // partial/corrupt run dir — skip silently
+        }
+
+        using (doc)
+        {
+            var rootEl = doc.RootElement;
+            var arr = rootEl.ValueKind == JsonValueKind.Array
+                ? rootEl
+                : rootEl.TryGetProperty("finalists", out var f) ? f : default;
+            if (arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0) return null;
+
+            var when = long.TryParse(Path.GetFileName(runDir), out var unix)
+                ? DateTimeOffset.FromUnixTimeSeconds(unix).ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                : Path.GetFileName(runDir);
+
+            var firstTitle = arr[0].TryGetProperty("title", out var t) ? t.GetString() : "";
+            var header = new TextBlock
+            {
+                Text = $"{when}   ·   {arr.GetArrayLength()} builds   ·   {firstTitle}…",
+                FontWeight = FontWeights.SemiBold,
+                FontSize = 12.5,
+            };
+            header.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
+
+            var body = new StackPanel { Margin = new Thickness(6, 4, 0, 6) };
+            foreach (var fin in arr.EnumerateArray())
+            {
+                body.Children.Add(BuildFinalistRow(fin));
+            }
+
+            var exp = new Expander
+            {
+                Header = header,
+                Content = body,
+                IsExpanded = expandByDefault,
+                Margin = new Thickness(4, 3, 4, 3),
+                BorderThickness = new Thickness(1),
+                Padding = new Thickness(6, 4, 6, 4),
+            };
+            exp.SetResourceReference(Control.BorderBrushProperty, "DimmerBrush");
+            exp.SetResourceReference(Control.BackgroundProperty, "BgBrush");
+            exp.SetResourceReference(Control.ForegroundProperty, "TextBrush");
+            return exp;
+        }
+    }
+
+    /// <summary>Clickable summary row for one finalist; click opens the full-guide detail window.</summary>
+    private Border BuildFinalistRow(JsonElement fin)
+    {
+        string Str(string key) => fin.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString() ?? "" : "";
+
+        var title = Str("title");
+        var oneLiner = Str("one_liner");
+        var statsBits = new List<string>();
+        if (fin.TryGetProperty("key_stats", out var ks) && ks.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var s in ks.EnumerateArray())
+            {
+                var label = s.TryGetProperty("label", out var l) ? l.GetString() : "";
+                var value = s.TryGetProperty("value", out var v) ? v.GetString() : "";
+                statsBits.Add($"{value} {label}");
+            }
+        }
+
+        var panel = new StackPanel();
+        var titleTb = new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, FontSize = 12.5 };
+        titleTb.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
+        panel.Children.Add(titleTb);
+        var statsTb = new TextBlock
+        {
+            Text = string.Join("    ", statsBits),
+            FontFamily = new FontFamily("Cascadia Mono, Consolas"),
+            FontSize = 11,
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        statsTb.SetResourceReference(TextBlock.ForegroundProperty, "DimBrush");
+        panel.Children.Add(statsTb);
+        var olTb = new TextBlock
+        {
+            Text = oneLiner,
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        olTb.SetResourceReference(TextBlock.ForegroundProperty, "DimmerBrush");
+        panel.Children.Add(olTb);
+
+        var row = new Border
+        {
+            Child = panel,
+            CornerRadius = new CornerRadius(5),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(10, 7, 10, 7),
+            Margin = new Thickness(2, 3, 8, 3),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Background = Brushes.Transparent,
+        };
+        row.SetResourceReference(Border.BorderBrushProperty, "DimmerBrush");
+        row.MouseEnter += (_, _) => row.SetResourceReference(Border.BackgroundProperty, "HoverBrush");
+        row.MouseLeave += (_, _) => row.Background = Brushes.Transparent;
+
+        // Capture everything the detail window needs NOW — the JsonDocument
+        // is disposed when BuildRunExpander returns.
+        var tags = new List<string>();
+        if (fin.TryGetProperty("tags", out var tg) && tg.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var x in tg.EnumerateArray())
+                if (x.ValueKind == JsonValueKind.String) tags.Add(x.GetString() ?? "");
+        }
+        var sections = new List<(string, string)> { ("Why it works", Str("why_it_works")) };
+        if (fin.TryGetProperty("guide", out var g) && g.ValueKind == JsonValueKind.Object)
+        {
+            string G(string k) => g.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String
+                ? v.GetString() ?? "" : "";
+            sections.Add(("Leveling", G("leveling")));
+            sections.Add(("Endgame (bossing & gearing)", G("endgame")));
+            sections.Add(("Clear / boss loadout swap", G("loadout_swap")));
+            sections.Add(("Playtest notes", G("playtest_notes")));
+        }
+        var code = Str("pob_import_code");
+        var statsLine = string.Join("    ", statsBits);
+
+        row.MouseLeftButtonUp += (_, _) =>
+        {
+            var win = new FinalistDetailWindow(title, oneLiner, tags, statsLine, sections, code)
+            {
+                Owner = this,
+                ShowInTaskbar = false,
+            };
+            win.Show();
+        };
+        return row;
     }
 
     /// <summary>

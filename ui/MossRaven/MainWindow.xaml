@@ -431,6 +431,17 @@
                                                FontSize="18"
                                                VerticalAlignment="Center"
                                                Margin="0,0,10,0"/>
+                                    <Button x:Name="FinalistHistoryButton"
+                                            Content="History"
+                                            ToolTip="Browse every saved Tier-5 run — click a build for its full guide"
+                                            VerticalAlignment="Center"
+                                            Padding="10,3"
+                                            Margin="0,0,6,0"
+                                            Background="Transparent"
+                                            Foreground="{DynamicResource TextBrush}"
+                                            BorderBrush="{DynamicResource DimmerBrush}"
+                                            BorderThickness="1"
+                                            Click="FinalistHistoryButton_Click"/>
                                     <Button x:Name="SynthesizeFinalistsButton"
                                             Content="Synthesize"
                                             ToolTip="Tier 5 — ask Claude to curate 5–10 finalists from the frontier"
@@ -493,6 +504,18 @@
                                     </Style>
                                 </ListBox.ItemContainerStyle>
                             </ListBox>
+
+                            <!-- Tier-5 HISTORY: every saved finalists/<ts>/ run, newest
+                                 first, one Expander per run. Swapped with BuildList by
+                                 the History toggle. Items are built in code-behind
+                                 (LoadFinalistHistory) from finalists.json files. -->
+                            <ScrollViewer Grid.Row="1"
+                                          x:Name="FinalistHistoryScroller"
+                                          Visibility="Collapsed"
+                                          VerticalScrollBarVisibility="Auto"
+                                          Padding="6,2,6,8">
+                                <StackPanel x:Name="FinalistHistoryPanel"/>
+                            </ScrollViewer>
 
                             <TextBlock Grid.Row="2"
                                        x:Name="BuildListHint"

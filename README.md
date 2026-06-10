@@ -16,13 +16,53 @@ See [SPEC.md](SPEC.md) for the full design. See [docs/pob-deepdive.md](docs/pob-
 |---|---|
 | `crates/pob` | real engine — fork-and-trim of poe2-agent (~3.9k loc); `init_smoke` + `parity` fixture tests |
 | `crates/archive` | MAP-Elites grid, atomic disk persistence + resume, import-code encode/decode |
-| `crates/surrogate` | OpenAI-compat client (Cerebras default, 429 backoff + Retry-After), datamined-vocab grounding, `MockSurrogate` |
-| `crates/dreamer` | Mode A Anthropic driver: seed / curate / Tier-5 synthesis with SPEC §1.1 guides; Mode B external marker |
+| `crates/surrogate` | OpenAI-compat client + **failover chain (Cerebras→Groq→Gemini)** with 429 backoff/cooldown, datamined-vocab grounding, `MockSurrogate` |
+| `crates/dreamer` | Tier-1/5 drivers: Anthropic **or any OpenAI-compat endpoint** (Gemini/Groq/Ollama — free solo Mode A); Mode B external marker |
 | `crates/mcp-server` | full stdio JSON-RPC framer; 7 tools including `save_finalists` (Mode B write-back) |
 | `crates/core` + `tier3.rs` | cascade evaluator; mutation applier (gem level/quality/swap + weapon-set swap); `LocalBackend` pool + `RemoteBackend` |
 | `bin/mossraven-service` | daemon (MCP stdio) / `--headless` / `--tool` one-shots; finalist persistence; session + archive state; PoB2 version stamping |
 | `bin/mossraven-node` | real `/score` via PobParser pool; bearer auth; `/health` reports workers + pob2 version |
-| `ui/MossRaven` (WPF) | live archive pane (click = copy import code), Tier-5 finalist cards with guides, concept history, archive file-watcher |
+| `ui/MossRaven` (WPF) | live archive pane (click = copy import code), Tier-5 finalist cards with guides, **finalist History browser** (every saved run → full guide detail window), concept history, archive file-watcher |
+
+---
+
+## Running it — solo vs. with Claude
+
+Two LLM seats exist: **Tier 2** (mutation proposals, thousands of cheap calls) and
+**Tier 1/5** (hypothesis + finalist guides, a handful of quality calls). Both run on
+free tiers; keys are env vars, never committed.
+
+### Solo (free, no Anthropic spend)
+
+1. Grab free keys (no card required for any of these):
+   [Groq](https://console.groq.com/keys) · [Google AI Studio](https://aistudio.google.com/apikey) · [Cerebras](https://cloud.cerebras.ai). Any subset works; more = more failover headroom.
+2. Set them for your shell / before launching the WPF:
+   ```powershell
+   $env:GROQ_API_KEY   = "gsk_..."   # Tier-2 chain + Tier-1/5 fallback
+   $env:GEMINI_API_KEY = "AIza..."   # Tier-2 chain + preferred free Tier-1/5
+   $env:CEREBRAS_API_KEY = "csk-..." # Tier-2 chain (first in line)
+   .\dist\MossRaven.exe
+   ```
+3. In the app: type a concept → **Seed** → **Run** (watch cells fill) → **Synthesize**
+   (Tier-5 guides, runs on Gemini/Groq when no Anthropic key is set) → **History** to
+   browse every saved run; click a build for its full leveling/bossing/swap guide.
+
+Optional upgrades: `MOSSRAVEN_ANTHROPIC_API_KEY` switches Tier-1/5 to Claude
+(noticeably better guides; a Synthesize click on Haiku costs ~$0.02 — pennies, not a
+subscription), or `MOSSRAVEN_T1_BASE_URL`/`_MODEL` points Tier-1/5 at local Ollama
+(`http://localhost:11434/v1` + `qwen2.5:32b-instruct`) for fully-offline guides.
+
+### With Claude Code (Mode B — runs on the subscription, $0 marginal)
+
+1. Open the WPF (it's the dashboard) and open Claude Code in this repo.
+2. Tell Claude the concept. Claude drives `seed_hypothesis → run_search →
+   get_frontier` over MCP/CLI; the WPF's file-watcher live-refreshes the archive pane
+   as cells fill.
+3. Claude curates the frontier itself (no API key burned) and calls `save_finalists`
+   — the run appears under **History** in the WPF.
+
+Do **not** set `ANTHROPIC_API_KEY` in Claude Code's own shell (it silently flips
+billing from subscription to API).
 
 ---
 
