@@ -28,18 +28,21 @@ use tier3::Tier3Backend;
 pub mod mutate;
 pub mod viability;
 
-/// Per-seed prompt block listing the closest reachable tree notables, so the
-/// LLM proposes `allocate_notable` ops that exist AND connect. Empty when the
-/// tree db or the seed's Spec is unavailable.
-fn reachable_notables_block(seed_xml: &str, tree_db: &mossraven_pob::TreeDb) -> String {
+/// The closest reachable tree notables for a seed, as (name, cost, stats).
+/// Feeds both the surrogate prompt block AND the engine's forced tree
+/// exploration. Empty when the tree db or the seed's Spec is unavailable.
+fn reachable_notables(
+    seed_xml: &str,
+    tree_db: &mossraven_pob::TreeDb,
+) -> Vec<(String, usize, String)> {
     if tree_db.is_empty() {
-        return String::new();
+        return Vec::new();
     }
     let Some(spec_start) = seed_xml.find("<Spec ") else {
-        return String::new();
+        return Vec::new();
     };
     let Some(end) = seed_xml[spec_start..].find('>') else {
-        return String::new();
+        return Vec::new();
     };
     let tag = &seed_xml[spec_start..spec_start + end];
     let attr = |a: &str| -> Option<&str> {
@@ -54,7 +57,7 @@ fn reachable_notables_block(seed_xml: &str, tree_db: &mossraven_pob::TreeDb) -> 
         .map(|csv| csv.split(',').filter_map(|x| x.trim().parse().ok()).collect())
         .unwrap_or_default();
     if allocated.is_empty() {
-        return String::new();
+        return Vec::new();
     }
     // Weapon-set nodes can't anchor normal-mode paths (see mutate.rs) — list
     // only notables the applier could actually deliver.
@@ -65,9 +68,26 @@ fn reachable_notables_block(seed_xml: &str, tree_db: &mossraven_pob::TreeDb) -> 
     };
     let anchors: std::collections::HashSet<u32> = allocated.difference(&ws).copied().collect();
     if anchors.is_empty() {
-        return String::new();
+        return Vec::new();
     }
-    let near = tree_db.nearby_notables(ver, &anchors, &ws, 6, 30);
+    tree_db.nearby_notables(ver, &anchors, &ws, 6, 48)
+}
+
+/// Offense-flavored notable, by stat text. Drives the forced-exploration
+/// ordering: the DPS floor is the binding SPEC constraint, so damage wheels
+/// get probed before defense/utility. False positives are cheap — a wasted
+/// slot still explores SOMETHING and MAP-Elites may keep it for EHP cells.
+fn is_offense_notable(stats: &str) -> bool {
+    (stats.contains("Damage") && !stats.contains("taken") && !stats.contains("Taken"))
+        || stats.contains("Critical")
+        || stats.contains("Cast Speed")
+        || stats.contains("Attack Speed")
+        || stats.contains("Penetrat")
+}
+
+/// Prompt block built from [`reachable_notables`] so the LLM proposes
+/// allocations that exist AND connect.
+fn format_notables_block(near: &[(String, usize, String)]) -> String {
     if near.is_empty() {
         return String::new();
     }
@@ -164,6 +184,9 @@ pub struct SearchEngine {
     /// Passive-tree database (TreeData/<ver>/tree.json). Powers pathed
     /// allocate_notable ops + the per-seed reachable-notables prompt block.
     pub tree_db: Arc<mossraven_pob::TreeDb>,
+    /// Generation counter — rotates the engine-forced tree-exploration picks
+    /// so successive generations probe different notables.
+    gen_counter: std::sync::atomic::AtomicUsize,
 }
 
 impl SearchEngine {
@@ -181,6 +204,7 @@ impl SearchEngine {
             state: Arc::new(Mutex::new(SearchState::default())),
             gem_db,
             tree_db,
+            gen_counter: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -227,9 +251,43 @@ impl SearchEngine {
             return Ok(GenerationReport::default());
         }
 
+        // 0. STEADY-STATE parent selection. Mutating the static session seed
+        // every generation is (1+λ) hill-climbing: no variant can ever stack
+        // two mutations, which caps tree growth at one notable from the
+        // original allocation set. Canonical MAP-Elites mutates ELITES — an
+        // elite that won its cell with notable A gets drawn again and gains
+        // notable B, compounding. Parent rotation: upper half of the archive
+        // by DPS (the binding SPEC §1.1.1 gap), with the session seed
+        // re-injected every 4th generation so the hypothesis basin keeps
+        // getting explored from the root.
+        let gen = self.gen_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let seed_xml = {
+            let mut elites = self.archive.snapshot();
+            if elites.is_empty() || gen % 4 == 0 {
+                seed_xml
+            } else {
+                elites.sort_by(|a, b| {
+                    b.1.stats
+                        .total_dps
+                        .partial_cmp(&a.1.stats.total_dps)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let pool = elites.len().div_ceil(2);
+                let (coords, parent) = &elites[(gen / 4 * 3 + gen % 4 - 1) % pool];
+                tracing::info!(
+                    parent_dps = parent.stats.total_dps,
+                    parent_cell = %coords.as_path_segment(),
+                    pool,
+                    "steady-state parent: mutating archive elite"
+                );
+                parent.pob_xml.clone()
+            }
+        };
+
         // 1. Tier 2 surrogate: propose mutations. Region focus (if any) rides
         // along in the hypothesis text — no trait churn, surrogate-agnostic.
-        let notables_block = reachable_notables_block(&seed_xml, &self.tree_db);
+        let nearby = reachable_notables(&seed_xml, &self.tree_db);
+        let notables_block = format_notables_block(&nearby);
         let concept_for_surrogate = match &region {
             Some(r) => format!(
                 "{concept}\n[FOCUS REGION: {r} — bias mutations toward MAP-Elites cells matching this pattern]{notables_block}"
@@ -327,6 +385,50 @@ impl SearchEngine {
                 p
             })
             .collect();
+
+        // 3a¾. ENGINE-FORCED tree exploration. Live LLMs never propose
+        // allocate_notable even with the prompt billing it as the strongest
+        // DPS lever — they fixate on familiar gem ops (observed across
+        // Cerebras/Groq/Gemini, 0/30 variants over 3 generations). Prompts
+        // request; engines enforce: the LAST `TREE_EXPLORE_VARIANTS` variants
+        // each get one AllocateNotable appended, cycling through the seed's
+        // reachable notables across generations so successive elites compound
+        // tree growth. MAP-Elites keeps whatever scores.
+        const TREE_EXPLORE_VARIANTS: usize = 3;
+        // Offense notables first (cost order within each class): the DPS
+        // floor is the binding viability constraint, and the close ring
+        // around caster starts is mostly defense/utility.
+        let explore_order: Vec<&(String, usize, String)> = nearby
+            .iter()
+            .filter(|n| is_offense_notable(&n.2))
+            .chain(nearby.iter().filter(|n| !is_offense_notable(&n.2)))
+            .collect();
+        let survivors: Vec<MutationProposal> = if explore_order.is_empty() {
+            survivors
+        } else {
+            let n = survivors.len();
+            survivors
+                .into_iter()
+                .enumerate()
+                .map(|(idx, mut p)| {
+                    if idx + TREE_EXPLORE_VARIANTS >= n {
+                        let slot = idx + TREE_EXPLORE_VARIANTS - n;
+                        let pick = (gen * TREE_EXPLORE_VARIANTS + slot) % explore_order.len();
+                        let (name, cost, _) = explore_order[pick];
+                        tracing::info!(
+                            variant = %p.variant_id,
+                            notable = %name,
+                            cost,
+                            "engine-forced tree exploration: allocate_notable appended"
+                        );
+                        p.ops.push(mossraven_surrogate::MutationOp::AllocateNotable {
+                            name: name.clone(),
+                        });
+                    }
+                    p
+                })
+                .collect()
+        };
 
         // 3b. Apply structured mutation ops to each survivor's seed XML.
         // Until this step landed, every variant scored identically to the
