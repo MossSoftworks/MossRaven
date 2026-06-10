@@ -10,8 +10,13 @@
 //!
 //! - `mlua::Lua` with LuaJIT is `!Send`. [`PobParser`] runs the engine on a
 //!   dedicated OS thread and talks to it via mpsc + tokio oneshot.
-//! - [`PobHeadless::init`] calls `std::env::set_current_dir(pob_src_path)` —
-//!   process-global mutation. **One [`PobParser`] per process, ever.**
+//! - [`PobHeadless::init`] (and `with_pob_cwd` at query time) temporarily
+//!   flips the process-global CWD and restores it. A **pool** of parsers in
+//!   one process is safe only under the pooled pattern: every parser points
+//!   at the **same** PoB2 path, given as an **absolute** path, and parsers
+//!   are initialized **sequentially** (see `core::tier3::LocalBackend::with_pool`
+//!   and `mossraven-node`). Concurrent scoped flips to the same target are
+//!   benign; never rely on process CWD elsewhere while parsers are live.
 //! - The vendored PoB2 Lua loads a `lua-utf8` stub we provide because LuaJIT
 //!   in safe mode can't load the real C module. Re-test after every
 //!   `vendor/PathOfBuilding-PoE2` bump.

@@ -65,5 +65,9 @@ pub struct HealthResponse {
     pub version: String,
     pub pob2_version: String,
     pub cores: usize,
+    /// Size of the node's PobParser pool — its real scoring concurrency
+    /// (≤ cores). `#[serde(default)]` so pre-1.1 nodes deserialize as 0.
+    #[serde(default)]
+    pub workers: usize,
     pub in_flight: usize,
 }
