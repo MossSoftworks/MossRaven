@@ -11,15 +11,41 @@
 use mossraven_pob::BuildStats;
 use serde::Serialize;
 
-pub const MIN_DPS: f64 = 300_000.0;
+/// Community-sourced DPS bands (PoE2 0.5):
+/// 50–100k = entry-pinnacle baseline; 500k+ = comfortably farming T0
+/// pinnacles; 10M+ = min-maxed meta. SPEC §1.1.4 "easily and cleanly clears
+/// all content" maps to the COMFORT band, so PASS requires ≥ 500k — but the
+/// achieved band is always reported so a 90k build reads "entry-pinnacle
+/// baseline", not just "FAIL".
+pub const DPS_ENTRY: f64 = 50_000.0;
+pub const DPS_CAPABLE: f64 = 100_000.0;
+pub const MIN_DPS: f64 = 500_000.0; // PASS floor = comfort band
+pub const DPS_META: f64 = 10_000_000.0;
 pub const MIN_EHP: f64 = 5_000.0;
 pub const RES_CAP: i32 = 75;
 pub const MIN_CHAOS_RES: i32 = -30;
 
+/// Which community band a DPS number lands in.
+pub fn dps_band(dps: f64) -> &'static str {
+    if dps >= DPS_META {
+        "meta (10M+)"
+    } else if dps >= MIN_DPS {
+        "comfort farm (500k+, SPEC pass)"
+    } else if dps >= DPS_CAPABLE {
+        "endgame capable (100k–500k)"
+    } else if dps >= DPS_ENTRY {
+        "entry-pinnacle baseline (50k–100k)"
+    } else {
+        "below entry (<50k)"
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ViabilityReport {
     pub pass: bool,
-    /// Human-readable failures, e.g. `"DPS 64,163 < 300,000 floor"`. Empty on pass.
+    /// Community DPS band the build lands in, regardless of pass/fail.
+    pub dps_band: &'static str,
+    /// Human-readable failures, e.g. `"DPS 64,163 < 500,000 floor"`. Empty on pass.
     pub failures: Vec<String>,
 }
 
@@ -28,8 +54,10 @@ pub fn check(stats: &BuildStats) -> ViabilityReport {
 
     if stats.total_dps < MIN_DPS {
         failures.push(format!(
-            "DPS {:.0} < {:.0} floor (red-map/pinnacle comfort)",
-            stats.total_dps, MIN_DPS
+            "DPS {:.0} < {:.0} floor — lands in '{}' band",
+            stats.total_dps,
+            MIN_DPS,
+            dps_band(stats.total_dps)
         ));
     }
     if stats.effective_hp < MIN_EHP {
@@ -56,6 +84,7 @@ pub fn check(stats: &BuildStats) -> ViabilityReport {
 
     ViabilityReport {
         pass: failures.is_empty(),
+        dps_band: dps_band(stats.total_dps),
         failures,
     }
 }
@@ -77,9 +106,19 @@ mod tests {
     }
 
     #[test]
-    fn endgame_ready_build_passes() {
-        let r = check(&stats(450_000.0, 6_500.0, 75, 10));
+    fn comfort_band_build_passes() {
+        let r = check(&stats(650_000.0, 6_500.0, 75, 10));
         assert!(r.pass, "{:?}", r.failures);
+        assert!(r.dps_band.contains("comfort"), "{}", r.dps_band);
+    }
+
+    #[test]
+    fn capable_band_fails_pass_but_reports_band() {
+        // 450k clears most content but isn't the SPEC "easily and cleanly"
+        // comfort band — FAIL with the honest band label.
+        let r = check(&stats(450_000.0, 6_500.0, 75, 10));
+        assert!(!r.pass);
+        assert!(r.dps_band.contains("endgame capable"), "{}", r.dps_band);
     }
 
     #[test]
@@ -90,6 +129,7 @@ mod tests {
         assert!(!r.pass);
         assert_eq!(r.failures.len(), 1);
         assert!(r.failures[0].contains("DPS"), "{:?}", r.failures);
+        assert!(r.dps_band.contains("entry-pinnacle"), "{}", r.dps_band);
     }
 
     #[test]

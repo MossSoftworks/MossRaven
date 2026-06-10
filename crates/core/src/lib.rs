@@ -210,6 +210,65 @@ impl SearchEngine {
             .collect();
         let pruned = proposed - survivors.len();
 
+        // 3a½. MECHANICAL scored-group guard. Live LLMs kept mutating a
+        // group-1 utility gem (Frost Bomb) instead of the scored skill
+        // despite the prompt marker — 9/10 variants scored identically.
+        // Prompts request; guards enforce:
+        //   - gem-targeting ops whose gem is NOT in the scored group are
+        //     DROPPED (logged) — they apply fine but can't move the score.
+        //   - a variant left with zero ops gets a deterministic fallback
+        //     (main-skill level from an explore ladder keyed by its index)
+        //     so the slot still explores instead of duplicating the seed.
+        // AddSupportGem targets the scored group by construction and
+        // SetActiveWeaponSet is loadout-global — both pass through.
+        let main_gem = mossraven_surrogate::find_main_skill_gem_name(&seed_xml);
+        let survivors: Vec<MutationProposal> = survivors
+            .into_iter()
+            .enumerate()
+            .map(|(idx, mut p)| {
+                use mossraven_surrogate::{gem_in_main_group, MutationOp};
+                let before = p.ops.len();
+                p.ops.retain(|op| {
+                    let target = match op {
+                        MutationOp::SetGemLevel { gem, .. }
+                        | MutationOp::SetGemQuality { gem, .. }
+                        | MutationOp::RemoveGem { gem } => Some(gem.as_str()),
+                        MutationOp::SwapGem { old, .. } => Some(old.as_str()),
+                        MutationOp::AddSupportGem { .. }
+                        | MutationOp::SetActiveWeaponSet { .. } => None,
+                    };
+                    match target {
+                        Some(g) if g != "*" && !gem_in_main_group(&seed_xml, g) => {
+                            tracing::warn!(
+                                variant = %p.variant_id,
+                                gem = g,
+                                op = ?op,
+                                "op targets an UNSCORED group; dropped by scored-group guard"
+                            );
+                            false
+                        }
+                        _ => true,
+                    }
+                });
+                if p.ops.is_empty() && before > 0 {
+                    if let Some(main) = &main_gem {
+                        let ladder = [4u32, 7, 10, 13, 16, 19, 20, 14, 8, 18];
+                        let level = ladder[idx % ladder.len()];
+                        tracing::info!(
+                            variant = %p.variant_id,
+                            level,
+                            "all ops guarded out; retargeted to main skill {main} explore ladder"
+                        );
+                        p.ops = vec![MutationOp::SetGemLevel {
+                            gem: main.clone(),
+                            level,
+                        }];
+                    }
+                }
+                p
+            })
+            .collect();
+
         // 3b. Apply structured mutation ops to each survivor's seed XML.
         // Until this step landed, every variant scored identically to the
         // seed — same DPS, same EHP, same cell. apply_ops_to_xml mutates

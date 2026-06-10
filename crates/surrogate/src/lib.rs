@@ -115,6 +115,20 @@ pub fn find_main_skill_gem_name(xml: &str) -> Option<String> {
     None
 }
 
+/// Is a gem with this `nameSpec` present inside the SCORED socket group?
+/// Case-insensitive. The mechanical guard in the cascade uses this to
+/// reject/retarget LLM ops aimed at unscored groups — live runs showed
+/// models repeatedly mutating a group-1 utility gem (Frost Bomb) despite
+/// the prompt marker, producing 9/10 identical-DPS variants.
+pub fn gem_in_main_group(xml: &str, gem_name: &str) -> bool {
+    let Some((start, end)) = main_socket_group_range(xml) else {
+        return false;
+    };
+    let group = xml[start..end].to_lowercase();
+    let needle = format!("namespec=\"{}\"", gem_name.to_lowercase());
+    group.contains(&needle)
+}
+
 /// Name of the Nth gem (1-based) in the scored socket group. N=1 is the
 /// active skill itself; N>=2 are its supports. Used by the MockSurrogate to
 /// pick a real support to remove without knowing the seed's contents.

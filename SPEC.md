@@ -25,9 +25,14 @@ A completed discovery session delivers **5–10 recommended builds**. Each final
 
 #### 1.1.1 Viability floors (v1 — PoE2 0.5 "Runes of Aldur")
 
+Community DPS bands (0.5): **50–100k** = entry-pinnacle baseline; **500k+** =
+comfortably farming Tier-0 pinnacles; **10M+** = min-maxed meta. "Easily and
+cleanly clears all content" maps to the COMFORT band — that is the PASS floor —
+and the achieved band is always reported alongside pass/fail.
+
 | Stat | Floor | Rationale |
 |---|---|---|
-| `total_dps` | ≥ 300,000 | community red-map / pinnacle comfort baseline; below this, fights are slogs |
+| `total_dps` | ≥ 500,000 (PASS) | comfort band — comfortably farming T0 pinnacles; bands reported: <50k below-entry · 50–100k entry · 100–500k capable · 500k+ comfort · 10M+ meta |
 | `effective_hp` | ≥ 5,000 | survives endgame white-mob burst (phys max-hit proxy) |
 | fire / cold / lightning res | = 75 (capped) | uncapped elemental res is the #1 pool shredder |
 | chaos res | ≥ −30 | chaos-heavy 0.5 endgame (Fate of the Vaal systems) |
