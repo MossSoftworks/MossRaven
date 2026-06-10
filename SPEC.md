@@ -14,6 +14,21 @@ Distribution target: **single Windows app any POE2 player can install** and run 
 
 No OpenAI dependency anywhere.
 
+### 1.1 End state — definition of done (v1)
+
+A completed discovery session delivers **5–10 recommended builds**. Each finalist ships:
+
+1. **Current-patch PoB2 XML** — importable into desktop PoB2, generated against the vendored PoB2 version and version-stamped. "Current" is a living requirement: keep `vendor/PathOfBuilding-PoE2` tracking the live game.
+2. **Build guide** — leveling path (act milestones, gem/passive order) and endgame plan (final tree, gear priorities, breakpoints).
+3. **Dual-loadout design for clear vs. boss** — one character, minimal switching friction. Prefer PoE2's weapon-set swap (PoB2 XML already encodes it: `<ItemSet useSecondWeaponSet=…>` plus weapon-set passive points); the finalist XML carries both loadouts. If a build can't dual-loadout cleanly, its guide must say so explicitly.
+
+Status (2026-06-10): nothing generated yet — `crates/pob/tests/fixtures/*.xml` are hand-collected *inputs* (parity/seeds), not outputs. The loop has not yet produced an archive or Tier-5 finalists.
+
+Tracked implications:
+
+- Tier-5 synthesis must emit guide prose (leveling + endgame + swap notes), not just stats and an import code.
+- Variant representation and mutation operators must become weapon-set aware, so clear/boss duality is *searched*, not bolted on afterwards.
+
 ---
 
 ## 2. Prior art this implements (don't reinvent — read these first)
