@@ -59,12 +59,26 @@ fn parse_args() -> Args {
             "--pob-path" => out.pob_path = it.next(),
             "--tool" => out.tool = it.next(),
             "--tool-args" => out.tool_args = it.next(),
+            // Big payloads (Mode-B finalist write-backs run ~70 KB with five
+            // import codes) blow past the ~32 K Windows argv limit, and
+            // PS 5.1 mangles inline JSON besides. Read the args from a file.
+            "--tool-args-file" => {
+                if let Some(p) = it.next() {
+                    match std::fs::read_to_string(&p) {
+                        Ok(s) => out.tool_args = Some(s),
+                        Err(e) => {
+                            eprintln!("--tool-args-file {p}: {e}");
+                            std::process::exit(2);
+                        }
+                    }
+                }
+            }
             "--help" | "-h" => {
                 println!(
                     "mossraven-service v{}\n\nUSAGE:\n    \
                      mossraven-service              # daemon (MCP server on stdio)\n    \
                      mossraven-service --headless [--concept TEXT] [--generations N]\n    \
-                     mossraven-service --tool NAME [--tool-args JSON]   # one-shot tool call\n\n\
+                     mossraven-service --tool NAME [--tool-args JSON | --tool-args-file PATH]   # one-shot tool call\n\n\
                      TOOLS:\n    \
                      seed_hypothesis  args: {{\"concept\": \"...\"}}\n    \
                      run_search       args: {{\"generations\": N, \"region\": \"...\"}}\n    \
