@@ -10,20 +10,19 @@ See [SPEC.md](SPEC.md) for the full design. See [docs/pob-deepdive.md](docs/pob-
 
 ## Status
 
-**v1 scaffold.** Workspace compiles, traits + stubs land, vendored PoB2 in place. Real engine impl pending: the salvage of `pob`/`pob_parser` from `poe2-agent` is the next step. Read `docs/pob-deepdive.md` first.
+**Working pipeline** (updated 2026-06-10). Every tier runs end-to-end; finalists persist to `%APPDATA%\Moss\MossRaven\data\finalists\`. Authoritative requirements live in `SPEC.md` (see §1.1 for the definition of done). Run `scripts/windows-validate.ps1` for the full build/test/smoke gate.
 
 | Component | State |
 |---|---|
-| Cargo workspace | compiles |
-| `crates/pob` | stub (placeholder `BuildStats`, returns `StubActive`) |
-| `crates/archive` | usable in-memory MAP-Elites; disk persist TODO |
-| `crates/surrogate` | trait + Cerebras-default config + `MockSurrogate`; real HTTP TODO |
-| `crates/dreamer` | trait + Mode A + Mode B markers; real Anthropic calls TODO |
-| `crates/mcp-server` | trait + tool schemas; JSON-RPC framer TODO |
-| `crates/core` + `tier3.rs` | `LocalBackend` stub, `RemoteBackend` HTTP wiring done |
-| `bin/mossraven-service` | starts, logs, runs one stub generation, exits |
-| `bin/mossraven-node` | live HTTP server, real `/health`, stub `/score` |
-| `ui/MossRaven` (WPF) | shell + MCP-stdio client stub; MainWindow with concept input + heatmap placeholder |
+| `crates/pob` | real engine — fork-and-trim of poe2-agent (~3.9k loc); `init_smoke` + `parity` fixture tests |
+| `crates/archive` | MAP-Elites grid, atomic disk persistence + resume, import-code encode/decode |
+| `crates/surrogate` | OpenAI-compat client (Cerebras default, 429 backoff + Retry-After), datamined-vocab grounding, `MockSurrogate` |
+| `crates/dreamer` | Mode A Anthropic driver: seed / curate / Tier-5 synthesis with SPEC §1.1 guides; Mode B external marker |
+| `crates/mcp-server` | full stdio JSON-RPC framer; 7 tools including `save_finalists` (Mode B write-back) |
+| `crates/core` + `tier3.rs` | cascade evaluator; mutation applier (gem level/quality/swap + weapon-set swap); `LocalBackend` pool + `RemoteBackend` |
+| `bin/mossraven-service` | daemon (MCP stdio) / `--headless` / `--tool` one-shots; finalist persistence; session + archive state; PoB2 version stamping |
+| `bin/mossraven-node` | real `/score` via PobParser pool; bearer auth; `/health` reports workers + pob2 version |
+| `ui/MossRaven` (WPF) | live archive pane (click = copy import code), Tier-5 finalist cards with guides, concept history, archive file-watcher |
 
 ---
 

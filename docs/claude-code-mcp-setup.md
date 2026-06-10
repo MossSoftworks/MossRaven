@@ -2,8 +2,6 @@
 
 MossRaven's orchestration service (`mossraven-service.exe`) exposes its outer control surface as an MCP server. **Adding it to Claude Code makes Claude Code itself Tier 1** — you drive the search interactively from your subscription, no Anthropic API key needed in the service. See [SPEC §4.1](../SPEC.md#41-tier-1-driver--dual-mode-tieronedriver-trait) for the architectural context.
 
-> **v1 status note:** `mossraven-service`'s MCP server is currently a stub — it logs that it would serve stdio JSON-RPC and exits. The wiring instructions below are the **end-state setup** so you can register it now; the tool calls will return errors until the real framer lands in `crates/mcp-server/src/lib.rs::serve_stdio`. The shell, the service binary, and the registration are all in place.
-
 ---
 
 ## One-time setup (the recommended path — local stdio MCP)
@@ -42,7 +40,11 @@ Inside a Claude Code session run `/mcp` — it'll list connected servers and the
 | `run_search` | Run N generations of the inner loop |
 | `read_archive` | Snapshot the MAP-Elites grid |
 | `inspect_cell` | Get the elite build in a specific cell |
-| `get_frontier` | Pareto frontier across novelty × power × cost |
+| `get_frontier` | Frontier of the strongest builds, with paste-ready PoB import codes |
+| `synthesize_finalists` | Tier 5 — in Mode B returns the frontier + instructions so YOU curate 5–10 finalists (each must include the SPEC §1.1 guide: leveling, endgame, clear/boss weapon-set swap) |
+| `save_finalists` | Persist your curated finalists: writes `finalists.json` + per-build markdown guide, PoB XML, and import-code file under `%APPDATA%\Moss\MossRaven\data\finalists\<ts>\` |
+
+**Drive workflow (Mode B):** `seed_hypothesis(concept)` → `run_search(generations, region?)` (repeat, reading `read_archive` for gaps) → `synthesize_finalists` → write the finalists per its instructions → `save_finalists({finalists})`.
 
 ---
 

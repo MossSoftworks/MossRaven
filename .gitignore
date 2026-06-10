@@ -33,3 +33,9 @@ Thumbs.db
 # PoB fixture XMLs are user-supplied and may include GGG-owned data.
 # Keep the README + .expected.json side-cars but never commit raw XML.
 crates/pob/tests/fixtures/*.xml
+
+# Scratch manifests dropped by fixture tooling (underscore prefix = scratch)
+crates/pob/tests/fixtures/_*.json
+
+# Python bytecode
+__pycache__/
