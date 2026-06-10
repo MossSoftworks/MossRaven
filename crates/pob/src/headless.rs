@@ -153,7 +153,10 @@ impl PobHeadless {
         let pob_src_path = pob_path.join("src");
         let pob_runtime_lua = pob_path.join("runtime/lua");
 
-        // PoB's Lua files use relative dofile() calls, so we must change to src/
+        // PoB's Lua files use relative dofile() calls, so we must change to src/.
+        // CWD is process-wide — hold the same lock as with_pob_cwd so a second
+        // VM initializing on another thread can't yank the directory mid-init.
+        let _guard = pob_cwd_lock();
         let original_cwd = std::env::current_dir()?;
         std::env::set_current_dir(&pob_src_path)?;
 
@@ -1556,6 +1559,7 @@ impl PobHeadless {
     where
         F: FnOnce(&Lua) -> LuaResult<R>,
     {
+        let _guard = pob_cwd_lock();
         let pob_src = self.pob_src_path.as_ref().ok_or(PobError::NotInitialized)?;
         let original_cwd = std::env::current_dir()?;
         std::env::set_current_dir(pob_src)?;
@@ -1569,6 +1573,23 @@ impl Default for PobHeadless {
     fn default() -> Self {
         Self::new().expect("Failed to create Lua runtime")
     }
+}
+
+/// Process-global lock for the CWD-swap critical sections (`init` and
+/// `with_pob_cwd`). The current directory is process-wide state: two
+/// PobHeadless VMs on different threads (parallel parity tests; LocalBackend
+/// with MOSSRAVEN_POOL_SIZE>1) race the swap, and one VM's relative
+/// LoadModule paths resolve against the other's directory. Symptom that
+/// found this: parity's query test failed alongside the score test but
+/// passed alone.
+///
+/// Serializing also serializes the Lua work itself — unavoidable while PoB
+/// loads modules by relative path mid-calculation. De-serializing the pool
+/// means absolute package.path instead of chdir; tracked as a follow-up
+/// (default pool size is 1).
+fn pob_cwd_lock() -> std::sync::MutexGuard<'static, ()> {
+    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 // SAFETY: PobHeadless is !Send because mlua::Lua with LuaJIT is !Send.
