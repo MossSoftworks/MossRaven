@@ -8,6 +8,14 @@ Set-Location $repo
 Start-Transcript -Path (Join-Path $repo 'scripts\validate-last-run.log') -Force
 $failed = @()
 
+# A lingering service/WPF/test process locks target\release\*.exe (cargo
+# relink → os error 32) and dist\*.exe (copy → resource busy). Registered
+# MCP clients respawn the daemon on their next call, so this is best-effort
+# hygiene, not a guarantee — stages that still hit a lock should be re-run.
+Get-Process | Where-Object { $_.ProcessName -match '^(mossraven|MossRaven)' } |
+    Stop-Process -Force -Confirm:$false -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 500
+
 function Invoke-Native {
     # Native tools (cargo, dotnet, our service) write progress to STDERR as a
     # matter of course. Under $ErrorActionPreference='Stop' a merged stderr
@@ -41,7 +49,9 @@ Stage "unit tests (core / surrogate / archive / node-protocol)" {
 }
 
 Stage "pob init smoke (loads Lua VM)" {
-    Invoke-Native cmd /c "cargo test -p mossraven-pob --release --test init_smoke -- --nocapture 2>&1"
+    # The test is #[ignore]d (loads the full Lua VM) — without --ignored this
+    # stage passed VACUOUSLY ("0 passed; 1 ignored"). Run it for real.
+    Invoke-Native cmd /c "cargo test -p mossraven-pob --release --test init_smoke -- --ignored --nocapture 2>&1"
 }
 
 Stage "pob parity fixtures (slow; self-skips without fixtures)" {
@@ -53,7 +63,10 @@ Stage "smoke drive: seed -> run -> frontier -> synthesize (temp archive)" {
     $dir = Split-Path $env:MOSSRAVEN_ARCHIVE_PATH
     if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
     $svc = "target\release\mossraven-service.exe"
-    Invoke-Native $svc --tool seed_hypothesis --tool-args '{\"concept\":\"validation smoke: off-meta cold DoT\"}'
+    # No spaces inside the JSON: PS 5.1 re-tokenizes the escaped-quote string
+    # when splatting through Invoke-Native and a space splits it into extra
+    # argv entries ("unknown arg: smoke:"). Spaceless JSON can't be split.
+    Invoke-Native $svc --tool seed_hypothesis --tool-args '{\"concept\":\"validation-smoke-off-meta-cold-DoT\"}'
     Invoke-Native $svc --tool run_search --tool-args '{\"generations\":2}'
     Invoke-Native $svc --tool get_frontier
     # Mode A (key set): synthesizes + persists. Mode B (no key): returns the
