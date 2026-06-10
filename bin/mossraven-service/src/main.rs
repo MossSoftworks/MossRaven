@@ -96,9 +96,14 @@ fn parse_args() -> Args {
                      MOSSRAVEN_NODE_BEARER            Bearer for remote nodes (default: dev bearer)\n    \
                      MOSSRAVEN_ANTHROPIC_API_KEY      Enables Mode A Tier-1 driver\n    \
                      MOSSRAVEN_ANTHROPIC_MODEL        Default: claude-sonnet-4-5\n    \
-                     CEREBRAS_API_KEY               Enables Cerebras Tier-2 surrogate\n    \
+                     CEREBRAS_API_KEY               Tier-2 surrogate provider (free tier)\n    \
                      CEREBRAS_MODEL                 Default: gpt-oss-120b\n    \
                      CEREBRAS_BASE_URL              Default: https://api.cerebras.ai/v1\n    \
+                     GROQ_API_KEY                   Tier-2 surrogate provider (free tier; llama-3.3-70b)\n    \
+                     GROQ_MODEL                     Default: llama-3.3-70b-versatile\n    \
+                     GEMINI_API_KEY                 Tier-2 surrogate provider (free tier; AI Studio)\n    \
+                     GEMINI_MODEL                   Default: gemini-2.5-flash-lite\n    \
+                     (set any subset; they form a failover chain Cerebras→Groq→Gemini)\n    \
                      RUST_LOG                       tracing filter (default: info)\n",
                     env!("CARGO_PKG_VERSION")
                 );
@@ -452,24 +457,51 @@ async fn build_context(pob_path: &str) -> Context {
         }
     };
 
-    // Surrogate: Cerebras if CEREBRAS_API_KEY is set, mock otherwise.
+    // Surrogate: a failover CHAIN built from whichever free-tier keys exist
+    // (priority: Cerebras → Groq → Gemini — fastest/highest-quota first).
+    // Free tiers saturate independently (Cerebras spent a morning returning
+    // queue_exceeded platform-wide); one being down must not stall the
+    // cascade while the others sit idle. No keys at all → deterministic mock.
+    let mut providers: Vec<(String, Arc<dyn SurrogateProvider>)> = Vec::new();
+    let env_nonempty = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    if let Some(key) = env_nonempty("CEREBRAS_API_KEY") {
+        let mut cfg = OpenAiCompatConfig::cerebras_default(key);
+        if let Some(url) = env_nonempty("CEREBRAS_BASE_URL") {
+            cfg.base_url = url;
+        }
+        if let Some(model) = env_nonempty("CEREBRAS_MODEL") {
+            cfg.model = model;
+        }
+        tracing::info!(model = %cfg.model, "surrogate provider: cerebras");
+        providers.push(("cerebras".into(), Arc::new(OpenAiCompatSurrogate::new(cfg))));
+    }
+    if let Some(key) = env_nonempty("GROQ_API_KEY") {
+        let mut cfg = OpenAiCompatConfig::groq_default(key);
+        if let Some(model) = env_nonempty("GROQ_MODEL") {
+            cfg.model = model;
+        }
+        tracing::info!(model = %cfg.model, "surrogate provider: groq");
+        providers.push(("groq".into(), Arc::new(OpenAiCompatSurrogate::new(cfg))));
+    }
+    if let Some(key) = env_nonempty("GEMINI_API_KEY") {
+        let mut cfg = OpenAiCompatConfig::gemini_default(key);
+        if let Some(model) = env_nonempty("GEMINI_MODEL") {
+            cfg.model = model;
+        }
+        tracing::info!(model = %cfg.model, "surrogate provider: gemini");
+        providers.push(("gemini".into(), Arc::new(OpenAiCompatSurrogate::new(cfg))));
+    }
     let (surrogate, surrogate_active): (Arc<dyn SurrogateProvider>, bool) =
-        match std::env::var("CEREBRAS_API_KEY") {
-            Ok(key) if !key.is_empty() => {
-                let mut cfg = OpenAiCompatConfig::cerebras_default(key);
-                if let Ok(url) = std::env::var("CEREBRAS_BASE_URL") {
-                    cfg.base_url = url;
-                }
-                if let Ok(model) = std::env::var("CEREBRAS_MODEL") {
-                    cfg.model = model;
-                }
-                tracing::info!(model = %cfg.model, base_url = %cfg.base_url, "Cerebras surrogate active");
-                (Arc::new(OpenAiCompatSurrogate::new(cfg)), true)
-            }
-            _ => {
-                tracing::info!("CEREBRAS_API_KEY not set; using MockSurrogate (deterministic stub)");
-                (Arc::new(mossraven_surrogate::MockSurrogate), false)
-            }
+        if providers.is_empty() {
+            tracing::info!(
+                "no surrogate keys set (CEREBRAS_API_KEY / GROQ_API_KEY / GEMINI_API_KEY); \
+                 using MockSurrogate (deterministic stub)"
+            );
+            (Arc::new(mossraven_surrogate::MockSurrogate), false)
+        } else {
+            let chain = mossraven_surrogate::FailoverSurrogate::new(providers);
+            tracing::info!(providers = ?chain.provider_names(), "surrogate failover chain active");
+            (Arc::new(chain), true)
         };
 
     // Dreamer: Mode A if MOSSRAVEN_ANTHROPIC_API_KEY is set, external otherwise.

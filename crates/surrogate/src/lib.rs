@@ -290,6 +290,18 @@ impl OpenAiCompatConfig {
             max_tokens: 8192,
         }
     }
+    pub fn groq_default(api_key: String) -> Self {
+        // Groq free tier (no card): llama-3.3-70b-versatile at 30 req/min,
+        // 1K req/day, ~700 tok/s. The fastest of the free options and the
+        // best instruction-follower of the three for negative constraints.
+        Self {
+            base_url: "https://api.groq.com/openai/v1".into(),
+            model: "llama-3.3-70b-versatile".into(),
+            api_key: Some(api_key),
+            temperature: 0.4,
+            max_tokens: 8192,
+        }
+    }
 }
 
 /// Default surrogate impl that talks to any OpenAI-compatible chat endpoint.
@@ -676,6 +688,136 @@ impl SurrogateProvider for OpenAiCompatSurrogate {
     }
 }
 
+/// Chains multiple surrogate providers with rate-limit-aware failover.
+///
+/// Free-tier LLM endpoints saturate independently (Cerebras spent a whole
+/// morning returning `queue_exceeded` platform-wide). One provider being
+/// down shouldn't stall the cascade when two other free tiers are idle.
+///
+/// Per call: providers are tried in order; one that fails with a
+/// rate/availability status (429 or any 5xx) is put on cooldown and the next
+/// is tried immediately. Cooldown lasts [`FailoverSurrogate::COOLDOWN`] so a
+/// saturated provider isn't hammered while its bucket refills, but rejoins
+/// the rotation automatically. Non-availability errors (schema mismatch,
+/// auth) also advance to the next provider — a provider that can't produce
+/// usable output is no better than one that's down — but don't trigger
+/// cooldown (the next call may be fine).
+pub struct FailoverSurrogate {
+    providers: Vec<FailoverEntry>,
+}
+
+struct FailoverEntry {
+    name: String,
+    inner: std::sync::Arc<dyn SurrogateProvider>,
+    cooldown_until: std::sync::Mutex<Option<std::time::Instant>>,
+}
+
+impl FailoverSurrogate {
+    pub const COOLDOWN: std::time::Duration = std::time::Duration::from_secs(120);
+
+    pub fn new(providers: Vec<(String, std::sync::Arc<dyn SurrogateProvider>)>) -> Self {
+        Self {
+            providers: providers
+                .into_iter()
+                .map(|(name, inner)| FailoverEntry {
+                    name,
+                    inner,
+                    cooldown_until: std::sync::Mutex::new(None),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn provider_names(&self) -> Vec<&str> {
+        self.providers.iter().map(|p| p.name.as_str()).collect()
+    }
+
+    fn is_cooling(entry: &FailoverEntry) -> bool {
+        entry
+            .cooldown_until
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .map(|t| t > std::time::Instant::now())
+            .unwrap_or(false)
+    }
+
+    fn start_cooldown(entry: &FailoverEntry) {
+        *entry
+            .cooldown_until
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) =
+            Some(std::time::Instant::now() + Self::COOLDOWN);
+    }
+
+    fn is_availability_error(err: &SurrogateError) -> bool {
+        matches!(
+            err,
+            SurrogateError::BadStatus { status, .. } if *status == 429 || *status >= 500
+        ) || matches!(err, SurrogateError::Http(_))
+    }
+
+    /// Try each provider in order, skipping ones on cooldown. If every
+    /// provider is cooling, ignore cooldowns and try them all anyway —
+    /// a stale cooldown must never make the cascade fail when a provider
+    /// has recovered early.
+    async fn try_each<'a, T, F, Fut>(&'a self, mut call: F) -> Result<T, SurrogateError>
+    where
+        F: FnMut(&'a dyn SurrogateProvider) -> Fut,
+        Fut: std::future::Future<Output = Result<T, SurrogateError>> + 'a,
+    {
+        let all_cooling = self.providers.iter().all(Self::is_cooling);
+        let mut last_err: Option<SurrogateError> = None;
+        for entry in &self.providers {
+            if !all_cooling && Self::is_cooling(entry) {
+                tracing::debug!(provider = %entry.name, "skipping provider on cooldown");
+                continue;
+            }
+            match call(entry.inner.as_ref()).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    if Self::is_availability_error(&e) {
+                        tracing::warn!(
+                            provider = %entry.name,
+                            error = %e,
+                            cooldown_s = Self::COOLDOWN.as_secs(),
+                            "surrogate provider unavailable; cooling down and failing over"
+                        );
+                        Self::start_cooldown(entry);
+                    } else {
+                        tracing::warn!(
+                            provider = %entry.name,
+                            error = %e,
+                            "surrogate provider errored; trying next provider"
+                        );
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or(SurrogateError::NotImplemented))
+    }
+}
+
+#[async_trait]
+impl SurrogateProvider for FailoverSurrogate {
+    async fn propose_mutations(
+        &self,
+        seed_pob_xml: &str,
+        seed_hypothesis: &str,
+        count: usize,
+    ) -> Result<Vec<MutationProposal>, SurrogateError> {
+        self.try_each(|p| p.propose_mutations(seed_pob_xml, seed_hypothesis, count))
+            .await
+    }
+
+    async fn cheap_score(
+        &self,
+        candidates: &[MutationProposal],
+    ) -> Result<Vec<CandidateScore>, SurrogateError> {
+        self.try_each(|p| p.cheap_score(candidates)).await
+    }
+}
+
 /// Mock surrogate for tests and bench harness. Returns deterministic scores.
 pub struct MockSurrogate;
 
@@ -819,5 +961,117 @@ mod main_skill_tests {
             Some("Tornado"),
             "mainActiveSkill=2 must select the second gem in the group"
         );
+    }
+}
+
+#[cfg(test)]
+mod failover_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Scripted fake: fails its first `fail_n` calls with the given error
+    /// factory, then succeeds. Counts total calls.
+    struct Fake {
+        fail_n: usize,
+        calls: AtomicUsize,
+        make_err: fn() -> SurrogateError,
+        tag: &'static str,
+    }
+
+    #[async_trait]
+    impl SurrogateProvider for Fake {
+        async fn propose_mutations(
+            &self,
+            _x: &str,
+            _h: &str,
+            _c: usize,
+        ) -> Result<Vec<MutationProposal>, SurrogateError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n < self.fail_n {
+                return Err((self.make_err)());
+            }
+            Ok(vec![MutationProposal {
+                variant_id: self.tag.to_string(),
+                pob_xml: String::new(),
+                origin_hypothesis: None,
+                cell_focus: None,
+                ops: vec![],
+            }])
+        }
+        async fn cheap_score(
+            &self,
+            c: &[MutationProposal],
+        ) -> Result<Vec<CandidateScore>, SurrogateError> {
+            Ok(c.iter()
+                .map(|p| CandidateScore {
+                    variant_id: p.variant_id.clone(),
+                    interest: 1.0,
+                    plausibility: 1.0,
+                    note: None,
+                })
+                .collect())
+        }
+    }
+
+    fn rate_limited() -> SurrogateError {
+        SurrogateError::BadStatus { status: 429, body: "queue_exceeded".into() }
+    }
+    fn schema_err() -> SurrogateError {
+        SurrogateError::Schema("no JSON".into())
+    }
+
+    fn fake(tag: &'static str, fail_n: usize, make_err: fn() -> SurrogateError) -> Arc<Fake> {
+        Arc::new(Fake { fail_n, calls: AtomicUsize::new(0), make_err, tag })
+    }
+
+    #[tokio::test]
+    async fn rate_limited_provider_fails_over_and_cools_down() {
+        let a = fake("a", 99, rate_limited); // always 429
+        let b = fake("b", 0, rate_limited);  // always succeeds
+        let f = FailoverSurrogate::new(vec![
+            ("a".into(), a.clone() as Arc<dyn SurrogateProvider>),
+            ("b".into(), b.clone() as Arc<dyn SurrogateProvider>),
+        ]);
+
+        let r = f.propose_mutations("x", "h", 1).await.unwrap();
+        assert_eq!(r[0].variant_id, "b", "second provider served the call");
+        assert_eq!(a.calls.load(Ordering::SeqCst), 1);
+
+        // Second call: a is on cooldown and must be SKIPPED (no second hit).
+        let r = f.propose_mutations("x", "h", 1).await.unwrap();
+        assert_eq!(r[0].variant_id, "b");
+        assert_eq!(a.calls.load(Ordering::SeqCst), 1, "cooling provider was not re-hit");
+    }
+
+    #[tokio::test]
+    async fn schema_error_advances_without_cooldown() {
+        let a = fake("a", 1, schema_err); // fails once (schema), then fine
+        let b = fake("b", 0, rate_limited);
+        let f = FailoverSurrogate::new(vec![
+            ("a".into(), a.clone() as Arc<dyn SurrogateProvider>),
+            ("b".into(), b.clone() as Arc<dyn SurrogateProvider>),
+        ]);
+
+        let r = f.propose_mutations("x", "h", 1).await.unwrap();
+        assert_eq!(r[0].variant_id, "b", "schema failure advanced to next provider");
+
+        // No cooldown for schema errors: a is tried again and now succeeds.
+        let r = f.propose_mutations("x", "h", 1).await.unwrap();
+        assert_eq!(r[0].variant_id, "a", "provider rejoined immediately after non-availability error");
+    }
+
+    #[tokio::test]
+    async fn all_cooling_still_tries_everyone() {
+        let a = fake("a", 1, rate_limited); // 429 once, then succeeds
+        let f = FailoverSurrogate::new(vec![
+            ("a".into(), a.clone() as Arc<dyn SurrogateProvider>),
+        ]);
+
+        assert!(f.propose_mutations("x", "h", 1).await.is_err(), "first call fails (only provider 429s)");
+        // a is now cooling — but it's ALL the providers, so the next call must
+        // ignore cooldowns rather than failing without trying.
+        let r = f.propose_mutations("x", "h", 1).await.unwrap();
+        assert_eq!(r[0].variant_id, "a");
     }
 }
