@@ -75,12 +75,43 @@ pub struct Finalist {
     pub key_stats: Vec<KeyStat>,
     /// `~base64(zlib(pob_xml))` — paste into PoB2 Import.
     pub pob_import_code: String,
+    /// SPEC §1.1 — leveling + endgame + dual-loadout guide. Optional in the
+    /// schema (old payloads parse) but REQUIRED for end-state finalists; the
+    /// synthesize prompts demand it.
+    #[serde(default)]
+    pub guide: Option<BuildGuide>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyStat {
     pub label: String,
     pub value: String,
+}
+
+/// SPEC §1.1 build guide — what makes a finalist *playable*, not just scored.
+/// All fields are prose written by Tier 5. Serde-defaulted so pre-guide
+/// finalist JSON (and conservative models) still parse.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BuildGuide {
+    /// Leveling path: act milestones, which skills to run early, gem/passive
+    /// order, and what to respec out of (and when) on the way to the final build.
+    #[serde(default)]
+    pub leveling: String,
+    /// Endgame plan: final tree direction, gear priorities, key breakpoints
+    /// (resist caps, attribute gates, spirit budget).
+    #[serde(default)]
+    pub endgame: String,
+    /// Clear-vs-boss dual-loadout design. PoE2 weapon-set swap is the preferred
+    /// mechanism (`useSecondWeaponSet` + weapon-set passive points) — minimal
+    /// switching friction. If the build can't dual-loadout cleanly, this MUST
+    /// say so explicitly (SPEC §1.1 requirement).
+    #[serde(default)]
+    pub loadout_swap: String,
+    /// Honest caveats — PoB models damage/defense, not feel (clunk, animation
+    /// lock, on-death effects). Never claim the build is fun; flag what needs
+    /// playtesting.
+    #[serde(default)]
+    pub playtest_notes: Option<String>,
 }
 
 #[async_trait]
@@ -244,24 +275,31 @@ impl TierOneDriver for AnthropicApiDriver {
         &self,
         frontier_snapshot: &Value,
     ) -> Result<Vec<Finalist>, DreamerError> {
-        // Crank max_tokens for this single call — finalists need real prose,
-        // not the 1024-cap one-liners that seed/curate get away with.
-        let me = self.clone_with_max_tokens(4096);
+        // Crank max_tokens for this single call — finalists need real prose
+        // (guides are paragraphs, not one-liners), so give generous headroom.
+        let me = self.clone_with_max_tokens(8192);
 
         let system = "You are a Path of Exile 2 build CURATOR. The search engine has produced \
                       a frontier of mechanically-scored builds. Your job is to pick the 5–10 \
                       most COMPELLING ones and explain — to a player who hasn't read the data — \
-                      WHY each is worth playing. \
+                      WHY each is worth playing, and HOW to actually play it. \
                       \n\nOutput ONLY valid JSON. No prose outside the JSON. No markdown fences. \
                       Be ruthless about distinct identities — don't return two finalists that \
                       play the same. Prefer variety across damage type, defense layer, role. \
                       Borrow the `pob_import_code`, `variant_id`, and `cell` values from the \
-                      frontier entry you're describing — DO NOT invent new ones.";
+                      frontier entry you're describing — DO NOT invent new ones. \
+                      \n\nEvery finalist MUST include a `guide` object (SPEC §1.1): \
+                      `leveling` (act milestones, early skills, gem/passive order, respec points), \
+                      `endgame` (final tree direction, gear priorities, breakpoints), and \
+                      `loadout_swap` (clear-vs-boss duality via PoE2 weapon-set swap — which gems/sets \
+                      go in weapon set 1 vs 2; if the build can't dual-loadout cleanly, SAY SO explicitly). \
+                      In `playtest_notes`, flag what PoB can't model (clunk, animation lock, on-death) — \
+                      NEVER claim the build is fun; it is theoretically viable until played.";
 
         let user = format!(
             "Frontier (Tier 4 pruned, ready for curation):\n{}\n\n\
              Return JSON of shape:\n\
-             {{\n  \"finalists\": [\n    {{\n      \"variant_id\": \"<copy from frontier>\",\n      \"title\": \"a short evocative name, like 'Cold DoT Tank Witch'\",\n      \"one_liner\": \"one sentence — what's the build do?\",\n      \"why_it_works\": \"2–4 sentences. Mechanical reasoning. Why this combo of skill/support/defense layer is good.\",\n      \"tags\": [\"cold\", \"DoT\", \"ES-stack\", \"boss-killer\"],\n      \"cell\": \"<copy from frontier>\",\n      \"key_stats\": [\n        {{\"label\": \"DPS\", \"value\": \"4.2M\"}},\n        {{\"label\": \"EHP\", \"value\": \"24k\"}},\n        {{\"label\": \"Resist\", \"value\": \"75/75/75\"}}\n      ],\n      \"pob_import_code\": \"<copy from frontier>\"\n    }}\n  ]\n}}",
+             {{\n  \"finalists\": [\n    {{\n      \"variant_id\": \"<copy from frontier>\",\n      \"title\": \"a short evocative name, like 'Cold DoT Tank Witch'\",\n      \"one_liner\": \"one sentence — what's the build do?\",\n      \"why_it_works\": \"2–4 sentences. Mechanical reasoning. Why this combo of skill/support/defense layer is good.\",\n      \"tags\": [\"cold\", \"DoT\", \"ES-stack\", \"boss-killer\"],\n      \"cell\": \"<copy from frontier>\",\n      \"key_stats\": [\n        {{\"label\": \"DPS\", \"value\": \"4.2M\"}},\n        {{\"label\": \"EHP\", \"value\": \"24k\"}},\n        {{\"label\": \"Resist\", \"value\": \"75/75/75\"}}\n      ],\n      \"pob_import_code\": \"<copy from frontier>\",\n      \"guide\": {{\n        \"leveling\": \"act-by-act milestones: which skills carry acts 1–3, gem order, passive priorities, when to respec into the final form\",\n        \"endgame\": \"final tree direction, gear priorities by slot, breakpoints to hit (resists, attributes, spirit)\",\n        \"loadout_swap\": \"clear vs boss: what lives in weapon set 1 vs weapon set 2, which passives to bind per set — or an explicit statement that this build can't dual-loadout cleanly and why\",\n        \"playtest_notes\": \"what PoB can't verify here — feel, clunk, on-death effects\"\n      }}\n    }}\n  ]\n}}",
             serde_json::to_string_pretty(frontier_snapshot).unwrap_or_default(),
         );
 
@@ -330,6 +368,17 @@ impl TierOneDriver for ExternalMcpDriver {
         &self,
         _archive_snapshot: &Value,
     ) -> Result<Hypothesis, DreamerError> {
+        Err(DreamerError::DriverIsExternal)
+    }
+    /// Without this override the trait default returns `NotImplemented`, which
+    /// the service maps to a hard ToolFailed error — and the Mode B handoff
+    /// branch (hand the frontier to the external Claude with instructions)
+    /// becomes unreachable. DriverIsExternal is the signal that branch keys on
+    /// (see ServiceControlSurface::synthesize_finalists in mossraven-service).
+    async fn synthesize_finalists(
+        &self,
+        _frontier_snapshot: &Value,
+    ) -> Result<Vec<Finalist>, DreamerError> {
         Err(DreamerError::DriverIsExternal)
     }
 }
