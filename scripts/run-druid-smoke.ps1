@@ -26,7 +26,10 @@ trap { Write-Host "DRUID SMOKE ERROR: $_" -ForegroundColor Red; try { Stop-Trans
 # instead of the production archive in %APPDATA%.
 $env:MOSSRAVEN_ARCHIVE_PATH = Join-Path $repo 'data\archive.json'
 
-$svc = "dist\mossraven-service.exe"
+# Prefer the freshly-built binary; fall back to dist if it is not present.
+# (dist\ can be locked by a running MCP daemon / the WPF shell, leaving a
+# stale exe there — target\release is what cargo just built.)
+$svc = if (Test-Path "target\release\mossraven-service.exe") { "target\release\mossraven-service.exe" } else { "dist\mossraven-service.exe" }
 Write-Host ("service build time: " + (Get-Item $svc).LastWriteTime)
 
 Invoke-Native $svc --headless --concept "Shieldy lightning wolf druid with boss and clear weapon swaps" --generations 8

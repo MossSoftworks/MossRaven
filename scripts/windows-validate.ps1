@@ -53,8 +53,8 @@ Stage "smoke drive: seed -> run -> frontier -> synthesize (temp archive)" {
     $dir = Split-Path $env:MOSSRAVEN_ARCHIVE_PATH
     if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
     $svc = "target\release\mossraven-service.exe"
-    Invoke-Native $svc --tool seed_hypothesis --tool-args '{"concept":"validation smoke: off-meta cold DoT"}'
-    Invoke-Native $svc --tool run_search --tool-args '{"generations":2}'
+    Invoke-Native $svc --tool seed_hypothesis --tool-args '{\"concept\":\"validation smoke: off-meta cold DoT\"}'
+    Invoke-Native $svc --tool run_search --tool-args '{\"generations\":2}'
     Invoke-Native $svc --tool get_frontier
     # Mode A (key set): synthesizes + persists. Mode B (no key): returns the
     # frontier + curation instructions. Both are healthy outcomes here.
