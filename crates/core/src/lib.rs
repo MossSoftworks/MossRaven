@@ -91,6 +91,9 @@ pub struct SearchState {
     /// Starting PoB XML for mutation. Empty means "no seed yet"; the cascade
     /// will still run but Tier 3 will reject every variant.
     pub seed_pob_xml: String,
+    /// Optional cell-region focus (e.g. `"chaos/es/boss/*"`). Folded into the
+    /// surrogate prompt so mutations bias toward matching cells.
+    pub region: Option<String>,
     pub config: StepConfig,
 }
 
@@ -130,16 +133,23 @@ impl SearchEngine {
         s.seed_pob_xml = seed_pob_xml.into();
     }
 
+    /// Set or clear the cell-region focus for subsequent steps. Comes from
+    /// `run_search(region)` on the MCP surface.
+    pub fn set_region(&self, region: Option<String>) {
+        self.state.lock().region = region;
+    }
+
     /// One generation of the cascade. Returns counts for the report.
     pub async fn step(&self) -> Result<GenerationReport, CoreError> {
         // Snapshot the state so we don't hold the lock across awaits.
-        let (concept, seed_xml, cfg, fallback_focus) = {
+        let (concept, seed_xml, cfg, fallback_focus, region) = {
             let s = self.state.lock();
             (
                 s.concept.clone(),
                 s.seed_pob_xml.clone(),
                 s.config.clone(),
                 s.initial_cell_focus.clone(),
+                s.region.clone(),
             )
         };
 
@@ -151,10 +161,17 @@ impl SearchEngine {
             return Ok(GenerationReport::default());
         }
 
-        // 1. Tier 2 surrogate: propose mutations
+        // 1. Tier 2 surrogate: propose mutations. Region focus (if any) rides
+        // along in the hypothesis text — no trait churn, surrogate-agnostic.
+        let concept_for_surrogate = match &region {
+            Some(r) => format!(
+                "{concept}\n[FOCUS REGION: {r} — bias mutations toward MAP-Elites cells matching this pattern]"
+            ),
+            None => concept.clone(),
+        };
         let proposals = self
             .surrogate
-            .propose_mutations(&seed_xml, &concept, cfg.mutations_per_step)
+            .propose_mutations(&seed_xml, &concept_for_surrogate, cfg.mutations_per_step)
             .await
             .map_err(|e| CoreError::Surrogate(e.to_string()))?;
         let proposed = proposals.len();

@@ -114,6 +114,12 @@ pub enum MutationOp {
     SetGemQuality { gem: String, quality: u32 },
     /// Replace the first `nameSpec="OLD"` with `nameSpec="NEW"` — swaps the gem.
     SwapGem { old: String, new: String },
+    /// Flip which weapon loadout the build's active item set scores under —
+    /// PoE2's clear-vs-boss weapon-set swap (SPEC §1.1). Rewrites
+    /// `useSecondWeaponSet` on the active `<ItemSet>` so Tier 3 evaluates the
+    /// other loadout. Only moves the score when the seed actually has gear in
+    /// weapon set 2.
+    SetActiveWeaponSet { use_second: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -457,7 +463,11 @@ impl SurrogateProvider for OpenAiCompatSurrogate {
              ACTUALLY APPLY to the PoB XML. Each op is one of:\n\
                {{\"op\":\"set_gem_level\", \"gem\":\"<exact nameSpec>\", \"level\":N}}     // 1..20\n\
                {{\"op\":\"set_gem_quality\", \"gem\":\"<exact nameSpec>\", \"quality\":Q}}  // 0..20\n\
-               {{\"op\":\"swap_gem\", \"old\":\"<exact nameSpec>\", \"new\":\"<other POE2 gem>\"}}\n\n\
+               {{\"op\":\"swap_gem\", \"old\":\"<exact nameSpec>\", \"new\":\"<other POE2 gem>\"}}\n\
+               {{\"op\":\"set_active_weapon_set\", \"use_second\":true}}  // score the OTHER weapon loadout (PoE2 clear-vs-boss swap)\n\
+             Use set_active_weapon_set (optionally combined with a gem-level op) to probe the\n\
+             build's second weapon-set loadout — the clear-vs-boss duality we ultimately ship.\n\
+             It only changes the score when the seed has gear in weapon set 2.\n\n\
              ⚠️ POE2 SCORING RULES (read carefully — these are not PoE1):\n\
              - **Only the ACTIVE skill gem's `level` moves DPS.** This is the FIRST gem in the\n\
                `<Skill mainActiveSkill=\"1\">` block (the main skill, NOT its supports).\n\

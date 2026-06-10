@@ -6,10 +6,12 @@
 //! identical BuildStats for every variant — the MAP-Elites archive filled
 //! with the same build under different cell labels.
 //!
-//! v1 ops touch `<Gem ...>` element attributes only:
-//! - `SetGemLevel { gem, level }`   — rewrites `level="N"`
-//! - `SetGemQuality { gem, quality }` — rewrites `quality="N"`
+//! v1 ops:
+//! - `SetGemLevel { gem, level }`   — rewrites `level="N"` on a `<Gem>`
+//! - `SetGemQuality { gem, quality }` — rewrites `quality="N"` on a `<Gem>`
 //! - `SwapGem { old, new }`         — rewrites `nameSpec="OLD"` → `nameSpec="NEW"`
+//! - `SetActiveWeaponSet { use_second }` — rewrites `useSecondWeaponSet` on the
+//!   active `<ItemSet>` (PoE2 clear-vs-boss weapon-set swap, SPEC §1.1)
 //!
 //! `gem` (or `old`) is matched against the `nameSpec` attribute on a `<Gem>`
 //! element. The special value `"*"` matches the FIRST `<Gem>` in the document
@@ -44,6 +46,9 @@ pub fn apply_ops_to_xml(seed_xml: &str, ops: &[MutationOp]) -> String {
             }
             MutationOp::SwapGem { old, new } => {
                 xml = rewrite_gem_attr(&xml, old, "nameSpec", new);
+            }
+            MutationOp::SetActiveWeaponSet { use_second } => {
+                xml = set_active_weapon_set(&xml, *use_second);
             }
         }
     }
@@ -139,6 +144,53 @@ fn find_gem_tag(xml: &str, name_spec: &str) -> Option<(usize, usize)> {
         cursor = close;
     }
     None
+}
+
+/// Set `useSecondWeaponSet` on the ACTIVE `<ItemSet>` — the one whose `id`
+/// matches the `activeItemSet` attribute on the `<Items>` container — falling
+/// back to the first `<ItemSet>` when the active id can't be resolved. PoB2
+/// stores the flag as the strings `"true"` / `"nil"`.
+fn set_active_weapon_set(xml: &str, use_second: bool) -> String {
+    let value = if use_second { "true" } else { "nil" };
+
+    // Resolve the active item-set id from `<Items activeItemSet="N" ...>`.
+    let active_id: Option<String> = xml.find("<Items").and_then(|start| {
+        let close = xml[start..].find('>')? + start + 1;
+        get_attr_value(&xml[start..close], "activeItemSet").map(String::from)
+    });
+
+    // Walk every `<ItemSet ...>` opening tag; prefer the id match, fall back
+    // to the first one seen.
+    let mut cursor = 0;
+    let mut target: Option<(usize, usize)> = None;
+    while let Some(rel) = xml[cursor..].find("<ItemSet") {
+        let tag_start = cursor + rel;
+        let Some(close_rel) = xml[tag_start..].find('>') else {
+            break;
+        };
+        let close = tag_start + close_rel + 1;
+        let tag = &xml[tag_start..close];
+        if target.is_none() {
+            target = Some((tag_start, close));
+        }
+        if let (Some(want), Some(have)) = (&active_id, get_attr_value(tag, "id")) {
+            if want == have {
+                target = Some((tag_start, close));
+                break;
+            }
+        }
+        cursor = close;
+    }
+
+    let Some((start, close)) = target else {
+        return xml.to_string();
+    };
+    let rewritten = set_attr_in_tag(&xml[start..close], "useSecondWeaponSet", value);
+    let mut out = String::with_capacity(xml.len() + 8);
+    out.push_str(&xml[..start]);
+    out.push_str(&rewritten);
+    out.push_str(&xml[close..]);
+    out
 }
 
 /// Return the value of `attr="..."` inside a single tag, or None if missing.
@@ -314,5 +366,58 @@ mod tests {
         let out = set_attr_in_tag(tag, "level", "13");
         assert!(out.contains(r#"level="13""#), "got: {out}");
         assert!(out.ends_with(r#""/>"#), "got: {out}");
+    }
+
+    const ITEM_SETS_SNIPPET: &str = r#"<Items activeItemSet="2" useSecondWeaponSet="nil">
+<ItemSet useSecondWeaponSet="nil" id="1">
+<Slot name="Weapon 1" itemId="1"/>
+</ItemSet>
+<ItemSet useSecondWeaponSet="nil" id="2">
+<Slot name="Weapon 1" itemId="2"/>
+</ItemSet>
+</Items>"#;
+
+    #[test]
+    fn weapon_set_flips_on_active_item_set_only() {
+        let ops = vec![MutationOp::SetActiveWeaponSet { use_second: true }];
+        let out = apply_ops_to_xml(ITEM_SETS_SNIPPET, &ops);
+        // ItemSet id=2 is active — it gets the flag.
+        let set2 = out
+            .lines()
+            .find(|l| l.contains(r#"id="2""#))
+            .expect("ItemSet 2 present");
+        assert!(set2.contains(r#"useSecondWeaponSet="true""#), "got: {set2}");
+        // ItemSet id=1 is untouched.
+        let set1 = out
+            .lines()
+            .find(|l| l.contains(r#"id="1""#))
+            .expect("ItemSet 1 present");
+        assert!(set1.contains(r#"useSecondWeaponSet="nil""#), "got: {set1}");
+    }
+
+    #[test]
+    fn weapon_set_falls_back_to_first_item_set() {
+        let xml = r#"<ItemSet useSecondWeaponSet="nil" id="7"><Slot/></ItemSet>"#;
+        let ops = vec![MutationOp::SetActiveWeaponSet { use_second: true }];
+        let out = apply_ops_to_xml(xml, &ops);
+        assert!(out.contains(r#"useSecondWeaponSet="true""#), "got: {out}");
+    }
+
+    #[test]
+    fn weapon_set_false_writes_nil() {
+        let xml = r#"<Items activeItemSet="1"><ItemSet useSecondWeaponSet="true" id="1"/></Items>"#;
+        let ops = vec![MutationOp::SetActiveWeaponSet { use_second: false }];
+        let out = apply_ops_to_xml(xml, &ops);
+        assert!(out.contains(r#"useSecondWeaponSet="nil""#), "got: {out}");
+    }
+
+    #[test]
+    fn weapon_set_no_item_set_is_noop() {
+        let xml = r#"<Skills><Gem nameSpec="X" level="1"/></Skills>"#;
+        let ops = vec![MutationOp::SetActiveWeaponSet { use_second: true }];
+        let out = apply_ops_to_xml(xml, &ops);
+        // No <ItemSet> anywhere — XML unchanged except the Skills-defaults
+        // flip that any non-empty ops list triggers.
+        assert!(!out.contains("useSecondWeaponSet"), "got: {out}");
     }
 }
