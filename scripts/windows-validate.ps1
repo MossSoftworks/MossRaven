@@ -9,7 +9,10 @@ Start-Transcript -Path (Join-Path $repo 'scripts\validate-last-run.log') -Force
 $failed = @()
 
 function Invoke-Native {
-    & $args[0] $args[1..($args.Count-1)]
+    # Merge stderr+stdout so cargo/dotnet/exe output lands in the transcript
+    # (external processes write to the console handle directly otherwise and
+    # the transcript only captures the terminating error).
+    & $args[0] $args[1..($args.Count-1)] 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "exit code $LASTEXITCODE" }
 }
 
