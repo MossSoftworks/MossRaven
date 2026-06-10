@@ -209,7 +209,7 @@ async fn run_tool_call(tool: &str, args_json: &str, pob_path: &str) -> anyhow::R
 
     // Persist archive on the way out (run_search already does it; this catches
     // the case where seed/inspect/etc. ran first).
-    if let Err(e) = ctx.archive.save(&ctx.archive_path) {
+    if let Err(e) = ctx.archive.save_if_dirty(&ctx.archive_path) {
         tracing::warn!(error = %e, "archive save failed");
     }
 
@@ -418,9 +418,8 @@ impl SessionState {
         }
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap())?;
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
+        // rename on Windows replaces atomically (MOVEFILE_REPLACE_EXISTING) —
+        // no remove-first, no not-found window for concurrent readers.
         std::fs::rename(&tmp, path)?;
         Ok(())
     }
@@ -770,7 +769,7 @@ async fn run_headless(args: &Args, pob_path: &str) -> anyhow::Result<()> {
     }
 
     // Persist archive after the run.
-    if let Err(e) = ctx.archive.save(&ctx.archive_path) {
+    if let Err(e) = ctx.archive.save_if_dirty(&ctx.archive_path) {
         tracing::warn!(error = %e, "archive save failed");
     }
 
@@ -815,7 +814,7 @@ async fn run_daemon(pob_path: &str) -> anyhow::Result<()> {
     mossraven_mcp_server::serve_stdio(surface).await?;
 
     // Persist archive on clean shutdown.
-    if let Err(e) = ctx.archive.save(&ctx.archive_path) {
+    if let Err(e) = ctx.archive.save_if_dirty(&ctx.archive_path) {
         tracing::warn!(error = %e, "archive save on shutdown failed");
     }
     Ok(())
@@ -887,6 +886,7 @@ impl ControlSurface for ServiceControlSurface {
     }
 
     async fn run_search(&self, generations: u32, region: Option<String>) -> Result<Value, McpError> {
+        self.ctx.archive.refresh_from_disk(&self.ctx.archive_path);
         // Region applies for this run (and sticks until the next run_search
         // call replaces or clears it).
         self.ctx.engine.set_region(region.clone());
@@ -905,7 +905,7 @@ impl ControlSurface for ServiceControlSurface {
             tracing::info!(gen = i, of = generations, ?report, "generation");
         }
         // Persist after the run so a crash doesn't lose progress.
-        if let Err(e) = self.ctx.archive.save(&self.ctx.archive_path) {
+        if let Err(e) = self.ctx.archive.save_if_dirty(&self.ctx.archive_path) {
             tracing::warn!(error = %e, "archive save failed after run_search");
         }
         Ok(json!({
@@ -922,6 +922,7 @@ impl ControlSurface for ServiceControlSurface {
     }
 
     async fn read_archive(&self) -> Result<Value, McpError> {
+        self.ctx.archive.refresh_from_disk(&self.ctx.archive_path);
         let snap = self.ctx.archive.snapshot();
         Ok(json!({
             "cells_filled": snap.len(),
@@ -940,6 +941,7 @@ impl ControlSurface for ServiceControlSurface {
     }
 
     async fn inspect_cell(&self, coords: Value) -> Result<Value, McpError> {
+        self.ctx.archive.refresh_from_disk(&self.ctx.archive_path);
         let coords: mossraven_archive::CellCoords = serde_json::from_value(coords)
             .map_err(|e| McpError::Protocol(format!("inspect_cell coords: {e}")))?;
         match self.ctx.archive.read(&coords) {
@@ -949,6 +951,7 @@ impl ControlSurface for ServiceControlSurface {
     }
 
     async fn get_frontier(&self) -> Result<Value, McpError> {
+        self.ctx.archive.refresh_from_disk(&self.ctx.archive_path);
         // v1: Pareto frontier is "all filled cells sorted by total_dps". The
         // real impl will compute a multi-objective frontier over
         // (novelty × power × cost). Cost requires economy data (poe2-mcp /
