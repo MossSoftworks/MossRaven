@@ -69,11 +69,15 @@ fn parse_args() -> Args {
                      read_archive     args: {{}}\n    \
                      inspect_cell     args: {{\"damage_type\": \"...\", \"defense_layer\": \"...\", ...}}\n    \
                      get_frontier     args: {{}}\n    \
-                     synthesize_finalists args: {{}}  # Tier 5: Claude curates frontier → narrated finalists\n\n\
+                     synthesize_finalists args: {{}}  # Tier 5: Claude curates frontier → narrated finalists\n    \
+                     save_finalists   args: {{\"finalists\": [...]}}  # persist curated finalists (Mode B write-back)\n\n\
                      ENV:\n    \
                      MOSSRAVEN_POB_PATH               PoB2 checkout (default: vendor/PathOfBuilding-PoE2)\n    \
                      MOSSRAVEN_ARCHIVE_PATH           Override archive.json location\n    \
                      MOSSRAVEN_SEED_XML_PATH          PoB XML the cascade mutates from. Defaults to crates/pob/tests/fixtures/seed.xml if present.\n    \
+                     MOSSRAVEN_POOL_SIZE              Local Tier-3 PobParser workers (default 1, cap min(cores/2, 8))\n    \
+                     MOSSRAVEN_NODE_URLS              Comma-separated mossraven-node URLs — switches Tier-3 to REMOTE\n    \
+                     MOSSRAVEN_NODE_BEARER            Bearer for remote nodes (default: dev bearer)\n    \
                      MOSSRAVEN_ANTHROPIC_API_KEY      Enables Mode A Tier-1 driver\n    \
                      MOSSRAVEN_ANTHROPIC_MODEL        Default: claude-sonnet-4-5\n    \
                      CEREBRAS_API_KEY               Enables Cerebras Tier-2 surrogate\n    \
@@ -176,6 +180,7 @@ async fn run_tool_call(tool: &str, args_json: &str, pob_path: &str) -> anyhow::R
         "inspect_cell" => surface.inspect_cell(args).await,
         "get_frontier" => surface.get_frontier().await,
         "synthesize_finalists" => surface.synthesize_finalists().await,
+        "save_finalists" => surface.save_finalists(args).await,
         other => return Err(anyhow::anyhow!("unknown tool: {other}")),
     };
 
@@ -400,9 +405,31 @@ async fn build_context(pob_path: &str) -> Context {
         }
     };
 
-    // Tier-3 backend selection: local PobParser pool, or no-op if PoB2 missing.
-    // Pool size: MOSSRAVEN_POOL_SIZE env var, default 1, capped at min(num_cpus/2, 8).
-    let tier3: Arc<dyn mossraven_core::tier3::Tier3Backend> = match parser {
+    // Tier-3 backend selection, in priority order (SPEC §4.3):
+    //   1. REMOTE — MOSSRAVEN_NODE_URLS (comma-separated mossraven-node base
+    //      URLs) + MOSSRAVEN_NODE_BEARER. Power-user / farm mode.
+    //   2. LOCAL — in-process PobParser pool; MOSSRAVEN_POOL_SIZE workers
+    //      (default 1, capped at min(cores/2, 8)).
+    //   3. NO-OP — PoB2 not found; every variant errors with guidance.
+    let remote_nodes: Vec<String> = std::env::var("MOSSRAVEN_NODE_URLS")
+        .map(|urls| {
+            urls.split(',')
+                .map(|s| s.trim().trim_end_matches('/').to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let tier3: Arc<dyn mossraven_core::tier3::Tier3Backend> = if !remote_nodes.is_empty() {
+        let bearer = std::env::var("MOSSRAVEN_NODE_BEARER")
+            .unwrap_or_else(|_| "dev-bearer-change-me".to_string());
+        tracing::info!(
+            nodes = remote_nodes.len(),
+            urls = ?remote_nodes,
+            "Tier-3 REMOTE backend active (mossraven-node pool)"
+        );
+        Arc::new(mossraven_core::tier3::RemoteBackend::new(remote_nodes, bearer))
+    } else {
+        match parser {
         Some(p) => {
             let pool_size = std::env::var("MOSSRAVEN_POOL_SIZE")
                 .ok()
@@ -435,6 +462,7 @@ async fn build_context(pob_path: &str) -> Context {
             }
         }
         None => Arc::new(NoopTier3),
+        }
     };
     let engine = SearchEngine::new(archive.clone(), surrogate, tier3);
 
@@ -672,7 +700,10 @@ impl ControlSurface for ServiceControlSurface {
         Ok(serde_json::to_value(hypothesis).unwrap())
     }
 
-    async fn run_search(&self, generations: u32, _region: Option<String>) -> Result<Value, McpError> {
+    async fn run_search(&self, generations: u32, region: Option<String>) -> Result<Value, McpError> {
+        // Region applies for this run (and sticks until the next run_search
+        // call replaces or clears it).
+        self.ctx.engine.set_region(region.clone());
         let mut total = mossraven_core::GenerationReport::default();
         for i in 1..=generations {
             let report = self
@@ -693,6 +724,7 @@ impl ControlSurface for ServiceControlSurface {
         }
         Ok(json!({
             "generations_run": generations,
+            "region": region,
             "totals": {
                 "variants_proposed": total.variants_proposed,
                 "variants_pruned": total.variants_pruned,
@@ -713,6 +745,10 @@ impl ControlSurface for ServiceControlSurface {
                 "stats": entry.stats,
                 "origin_hypothesis": entry.origin_hypothesis,
                 "data_version": entry.data_version,
+                // The WPF archive pane encodes this into a clipboard-ready
+                // import code on click; omitting it made every archive row
+                // report "no PoB XML on this entry".
+                "pob_xml": entry.pob_xml,
             })).collect::<Vec<_>>(),
         }))
     }
@@ -775,23 +811,179 @@ impl ControlSurface for ServiceControlSurface {
     async fn synthesize_finalists(&self) -> Result<Value, McpError> {
         let frontier = self.get_frontier().await?;
         match self.ctx.dreamer.synthesize_finalists(&frontier).await {
-            Ok(finalists) => Ok(json!({
-                "finalists": finalists,
-                "source_frontier_size": frontier.get("frontier").and_then(|f| f.as_array()).map(|a| a.len()).unwrap_or(0),
-            })),
+            Ok(finalists) => {
+                // Mode A: persist immediately — the files ARE the deliverable
+                // (SPEC §1.1). A persistence failure is logged but doesn't
+                // void the synthesis.
+                let saved_to = match persist_finalists(&self.ctx, &finalists) {
+                    Ok(dir) => Some(dir.display().to_string()),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "finalist persistence failed");
+                        None
+                    }
+                };
+                Ok(json!({
+                    "finalists": finalists,
+                    "source_frontier_size": frontier.get("frontier").and_then(|f| f.as_array()).map(|a| a.len()).unwrap_or(0),
+                    "saved_to": saved_to,
+                }))
+            }
             Err(mossraven_dreamer::DreamerError::DriverIsExternal) => {
-                // Mode B: tell the host to do it. Hand back the raw frontier
-                // and the schema so the external Claude can produce finalists
-                // and write them back via a separate tool call (TBD).
+                // Mode B: hand the frontier to the external Claude with the
+                // finalist schema; it curates, then writes back via the
+                // save_finalists tool.
                 Ok(json!({
                     "external": true,
                     "frontier": frontier.get("frontier").cloned().unwrap_or(json!([])),
-                    "instructions": "Mode B: synthesize Finalists yourself from this frontier. Schema: {variant_id, title, one_liner, why_it_works, tags[], cell, key_stats[{label,value}], pob_import_code}. Copy variant_id/cell/pob_import_code VERBATIM.",
+                    "instructions": "Mode B: synthesize Finalists yourself from this frontier. Schema: {variant_id, title, one_liner, why_it_works, tags[], cell, key_stats[{label,value}], pob_import_code, guide:{leveling, endgame, loadout_swap, playtest_notes}}. The guide is REQUIRED (SPEC 1.1): leveling = act milestones + gem/passive order + respec points; endgame = final tree direction + gear priorities + breakpoints; loadout_swap = clear-vs-boss duality via PoE2 weapon-set swap (which gems/passives per weapon set), or an EXPLICIT statement the build can't dual-loadout cleanly; playtest_notes = what PoB can't model (never claim it's fun). Copy variant_id/cell/pob_import_code VERBATIM. When done, call save_finalists with {\"finalists\":[...]} to persist them to disk.",
                 }))
             }
             Err(e) => Err(McpError::ToolFailed(format!("synthesize_finalists: {e}"))),
         }
     }
+
+    /// Mode B write-back: the external Claude curated finalists and hands them
+    /// here for persistence. Also reachable via `--tool save_finalists`.
+    async fn save_finalists(&self, args: Value) -> Result<Value, McpError> {
+        let list = if args.is_array() {
+            args.clone()
+        } else {
+            args.get("finalists")
+                .cloned()
+                .ok_or_else(|| McpError::Protocol("save_finalists: missing 'finalists' array".into()))?
+        };
+        let finalists: Vec<mossraven_dreamer::Finalist> = serde_json::from_value(list)
+            .map_err(|e| McpError::Protocol(format!("save_finalists: bad finalist shape: {e}")))?;
+        if finalists.is_empty() {
+            return Err(McpError::Protocol("save_finalists: empty finalists array".into()));
+        }
+        let dir = persist_finalists(&self.ctx, &finalists)
+            .map_err(|e| McpError::ToolFailed(format!("save_finalists: persist failed: {e}")))?;
+        Ok(json!({
+            "saved": finalists.len(),
+            "dir": dir.display().to_string(),
+        }))
+    }
+}
+
+/// Write finalists to `<data-dir>/finalists/<unix-ts>/`:
+/// `finalists.json` (the full array) plus, per finalist, a human-readable
+/// markdown guide, the raw PoB XML (from the archive by variant_id, falling
+/// back to decoding the import code), and the paste-ready import code.
+fn persist_finalists(
+    ctx: &Context,
+    finalists: &[mossraven_dreamer::Finalist],
+) -> anyhow::Result<std::path::PathBuf> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let base = ctx
+        .archive_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("finalists")
+        .join(ts.to_string());
+    std::fs::create_dir_all(&base)?;
+
+    // Archive XML by variant_id — the authoritative source for each finalist's
+    // build XML (import codes are derived FROM these).
+    let xml_by_variant: std::collections::HashMap<String, String> = ctx
+        .archive
+        .snapshot()
+        .into_iter()
+        .map(|(_, e)| (e.variant_id, e.pob_xml))
+        .collect();
+
+    std::fs::write(
+        base.join("finalists.json"),
+        serde_json::to_string_pretty(finalists)?,
+    )?;
+
+    for (i, f) in finalists.iter().enumerate() {
+        let stem = format!("{:02}-{}", i + 1, slugify(&f.title, 40));
+        std::fs::write(base.join(format!("{stem}.pob-code.txt")), &f.pob_import_code)?;
+        let xml = xml_by_variant
+            .get(&f.variant_id)
+            .cloned()
+            .or_else(|| mossraven_archive::decode_pob_import_code(&f.pob_import_code).ok());
+        match &xml {
+            Some(xml) => std::fs::write(base.join(format!("{stem}.xml")), xml)?,
+            None => tracing::warn!(
+                variant = %f.variant_id,
+                "finalist XML unavailable (not in archive, import code undecodable)"
+            ),
+        }
+        std::fs::write(base.join(format!("{stem}.md")), finalist_markdown(f))?;
+    }
+    tracing::info!(dir = %base.display(), count = finalists.len(), "finalists persisted");
+    Ok(base)
+}
+
+/// Lowercase alnum-dash slug used for finalist file stems, capped at `max` chars.
+fn slugify(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if out.len() >= max {
+            break;
+        }
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "finalist".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Render one finalist as a standalone markdown build guide (SPEC §1.1).
+fn finalist_markdown(f: &mossraven_dreamer::Finalist) -> String {
+    let mut md = String::new();
+    md.push_str(&format!("# {}\n\n> {}\n\n", f.title, f.one_liner));
+    if !f.tags.is_empty() {
+        md.push_str(&format!("**Tags:** {}\n\n", f.tags.join(" · ")));
+    }
+    md.push_str(&format!(
+        "**Cell:** `{}`  \n**Variant:** `{}`\n\n",
+        f.cell, f.variant_id
+    ));
+    if !f.key_stats.is_empty() {
+        md.push_str("| stat | value |\n|---|---|\n");
+        for ks in &f.key_stats {
+            md.push_str(&format!("| {} | {} |\n", ks.label, ks.value));
+        }
+        md.push('\n');
+    }
+    md.push_str(&format!("## Why it works\n\n{}\n\n", f.why_it_works));
+    match &f.guide {
+        Some(g) => {
+            md.push_str(&format!("## Leveling\n\n{}\n\n", g.leveling));
+            md.push_str(&format!("## Endgame\n\n{}\n\n", g.endgame));
+            md.push_str(&format!(
+                "## Clear / boss loadout swap\n\n{}\n\n",
+                g.loadout_swap
+            ));
+            if let Some(p) = &g.playtest_notes {
+                md.push_str(&format!("## Playtest notes\n\n{}\n\n", p));
+            }
+        }
+        None => md.push_str(
+            "## Guide\n\n*(No guide attached — synthesized by a pre-§1.1 driver.)*\n\n",
+        ),
+    }
+    md.push_str(
+        "## PoB2 import code\n\nPaste into desktop PoB2 → Import/Export Build → Import from code.\n\n```\n",
+    );
+    md.push_str(&f.pob_import_code);
+    md.push_str(
+        "\n```\n\n*Theoretical viability only — PoB models damage/defense, not feel. Playtest before judging.*\n",
+    );
+    md
 }
 
 /// Build a LocalBackend with `total` workers given the first parser already

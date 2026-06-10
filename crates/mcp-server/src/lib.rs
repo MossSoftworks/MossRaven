@@ -100,6 +100,20 @@ pub fn control_surface_tools() -> Vec<ToolSchema> {
             description: "Tier 5 — Claude reads the current frontier and produces 5–10 narrated, curated finalists with paste-ready PoB import codes. Routes through the active Tier-1 driver (Mode A: AnthropicApiDriver; Mode B: external Claude Code).".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         },
+        ToolSchema {
+            name: "save_finalists".into(),
+            description: "Persist curated finalists to the MossRaven data directory (finalists.json + per-finalist markdown guide, PoB XML, and import-code file). Mode A calls this automatically after synthesis; in Mode B the driving Claude calls it with the finalists it curated. Returns the directory written.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "finalists": {
+                        "type": "array",
+                        "description": "Finalist objects: {variant_id, title, one_liner, why_it_works, tags[], cell, key_stats[{label,value}], pob_import_code, guide:{leveling, endgame, loadout_swap, playtest_notes}}. Copy variant_id/cell/pob_import_code VERBATIM from the frontier."
+                    }
+                },
+                "required": ["finalists"]
+            }),
+        },
     ]
 }
 
@@ -118,6 +132,14 @@ pub trait ControlSurface: Send + Sync {
     async fn synthesize_finalists(&self) -> Result<Value, McpError> {
         Err(McpError::ToolFailed(
             "synthesize_finalists not implemented on this ControlSurface".into(),
+        ))
+    }
+    /// Persist curated finalists (the Mode B write-back path; Mode A uses it
+    /// internally too). `args` is the raw tool arguments object containing a
+    /// `finalists` array. Default: not implemented.
+    async fn save_finalists(&self, _args: Value) -> Result<Value, McpError> {
+        Err(McpError::ToolFailed(
+            "save_finalists not implemented on this ControlSurface".into(),
         ))
     }
 }
@@ -301,6 +323,7 @@ async fn call_tool<S: ControlSurface>(
         "inspect_cell" => surface.inspect_cell(args).await,
         "get_frontier" => surface.get_frontier().await,
         "synthesize_finalists" => surface.synthesize_finalists().await,
+        "save_finalists" => surface.save_finalists(args).await,
         other => Err(McpError::UnknownTool(other.to_string())),
     }
 }

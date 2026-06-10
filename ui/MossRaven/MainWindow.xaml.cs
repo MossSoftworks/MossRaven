@@ -253,6 +253,24 @@ public partial class MainWindow : Window
                 var cell = Str("cell");
                 var importCode = Str("pob_import_code");
 
+                // SPEC §1.1 guide — leveling / endgame / clear-boss swap prose.
+                var guideLine = "";
+                if (f.TryGetProperty("guide", out var g) && g.ValueKind == JsonValueKind.Object)
+                {
+                    string G(string key) => g.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String
+                        ? v.GetString() ?? "" : "";
+                    var parts = new List<string>();
+                    var lev = G("leveling");
+                    if (lev.Length > 0) parts.Add("⮕ Leveling: " + lev);
+                    var endg = G("endgame");
+                    if (endg.Length > 0) parts.Add("⮕ Endgame: " + endg);
+                    var swap = G("loadout_swap");
+                    if (swap.Length > 0) parts.Add("⮕ Clear/boss swap: " + swap);
+                    var notes = G("playtest_notes");
+                    if (notes.Length > 0) parts.Add("⮕ Playtest: " + notes);
+                    guideLine = string.Join("\n", parts);
+                }
+
                 var tags = new List<string>();
                 if (f.TryGetProperty("tags", out var tarr) && tarr.ValueKind == JsonValueKind.Array)
                 {
@@ -283,6 +301,7 @@ public partial class MainWindow : Window
                     OriginLine = string.IsNullOrEmpty(why)
                         ? oneLiner
                         : $"{oneLiner} — {why}  ·  cell: {cell}",
+                    GuideLine = guideLine,
                     // Finalists carry the import code directly from the
                     // service — DO NOT re-encode. EncodePobImportCode would
                     // double-compress a string that's already compressed.
@@ -290,6 +309,10 @@ public partial class MainWindow : Window
                     PobXml = "", // not surfaced — UI only needs the import code for clipboard
                 });
             }
+
+            // Mode A persists finalists to disk and reports where.
+            var savedTo = root.TryGetProperty("saved_to", out var st) && st.ValueKind == JsonValueKind.String
+                ? st.GetString() ?? "" : "";
 
             Dispatcher.Invoke(() =>
             {
@@ -299,7 +322,9 @@ public partial class MainWindow : Window
                 BuildList.ItemsSource = entries;
                 BuildListHint.Text = entries.Count == 0
                     ? "Claude returned 0 finalists — try seeding more cells before synthesizing."
-                    : "Click a finalist to copy its PoB import code. Refresh restores the full archive view.";
+                    : string.IsNullOrEmpty(savedTo)
+                        ? "Click a finalist to copy its PoB import code. Refresh restores the full archive view."
+                        : $"Click a finalist to copy its PoB import code. Guides saved to {savedTo}";
             });
         }
         catch (Exception ex)
@@ -395,6 +420,8 @@ public partial class MainWindow : Window
         public string HeaderLine { get; set; } = "";
         public string StatsLine { get; set; } = "";
         public string OriginLine { get; set; } = "";
+        /// <summary>SPEC §1.1 guide text (leveling / endgame / loadout swap). Empty for plain archive rows.</summary>
+        public string GuideLine { get; set; } = "";
         public string PobImportCode { get; set; } = "";
         public string PobXml { get; set; } = "";
     }
@@ -502,7 +529,18 @@ public partial class MainWindow : Window
         origin.SetResourceReference(TextBlock.ForegroundProperty, "DimmerBrush");
         origin.SetValue(TextBlock.FontSizeProperty, 10.5);
         origin.SetValue(TextBlock.MarginProperty, new Thickness(0, 3, 0, 0));
+        origin.SetValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap);
         sp.AppendChild(origin);
+
+        // SPEC §1.1 guide block — only visible on finalist entries (empty
+        // string collapses to zero height on archive rows).
+        var guide = new FrameworkElementFactory(typeof(TextBlock));
+        guide.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(BuildEntry.GuideLine)));
+        guide.SetResourceReference(TextBlock.ForegroundProperty, "DimBrush");
+        guide.SetValue(TextBlock.FontSizeProperty, 11.0);
+        guide.SetValue(TextBlock.MarginProperty, new Thickness(0, 4, 0, 0));
+        guide.SetValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap);
+        sp.AppendChild(guide);
 
         template.VisualTree = sp;
         return template;

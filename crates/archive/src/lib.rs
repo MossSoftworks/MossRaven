@@ -39,6 +39,25 @@ pub fn encode_pob_import_code(xml: &str) -> String {
     base64::engine::general_purpose::URL_SAFE.encode(&compressed)
 }
 
+/// Decode a PoB2 import code back to XML — inverse of
+/// [`encode_pob_import_code`]. Tolerant of both base64 alphabets (PoB itself
+/// uses URL-safe; codes copied off pobb.in / pastebins sometimes carry the
+/// standard alphabet).
+pub fn decode_pob_import_code(code: &str) -> Result<String, String> {
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+    let trimmed = code.trim();
+    let compressed = base64::engine::general_purpose::URL_SAFE
+        .decode(trimmed)
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(trimmed))
+        .map_err(|e| format!("base64 decode failed: {e}"))?;
+    let mut xml = String::new();
+    ZlibDecoder::new(compressed.as_slice())
+        .read_to_string(&mut xml)
+        .map_err(|e| format!("zlib inflate failed: {e}"))?;
+    Ok(xml)
+}
+
 #[derive(Debug, Error)]
 pub enum ArchiveError {
     #[error("io error: {0}")]
