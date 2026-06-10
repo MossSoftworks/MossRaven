@@ -290,6 +290,22 @@ fn resolve_pob_path(cli_override: Option<&str>) -> String {
     "vendor/PathOfBuilding-PoE2".to_string()
 }
 
+/// Best-effort PoB2 version from `manifest.xml` (`<Version number="0.19.0" />`).
+/// Same logic as mossraven-node; duplicated to keep the binaries dependency-light.
+fn read_pob2_version(pob_path: &std::path::Path) -> String {
+    let Ok(manifest) = std::fs::read_to_string(pob_path.join("manifest.xml")) else {
+        return "unknown".to_string();
+    };
+    const NEEDLE: &str = "Version number=\"";
+    manifest
+        .find(NEEDLE)
+        .and_then(|i| {
+            let rest = &manifest[i + NEEDLE.len()..];
+            rest.find('"').map(|j| rest[..j].to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 // ----- Engine construction (shared by daemon + headless) -----
 
 struct Context {
@@ -465,6 +481,15 @@ async fn build_context(pob_path: &str) -> Context {
         }
     };
     let engine = SearchEngine::new(archive.clone(), surrogate, tier3);
+
+    // Stamp every archive entry with the live PoB2 version (SPEC §9:
+    // versioning — entries silently rot across league patches otherwise).
+    // StepConfig defaults to "pob2:unknown"; manifest.xml is authoritative.
+    {
+        let v = read_pob2_version(std::path::Path::new(pob_path));
+        tracing::info!(pob2_version = %v, "archive entries stamped with this data version");
+        engine.state.lock().config.data_version = format!("pob2:{v}");
+    }
 
     // Optional seed PoB XML — preload so engine.step has a real build to
     // mutate. Search order (first readable file wins):
