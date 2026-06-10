@@ -86,7 +86,8 @@ fn parse_args() -> Args {
                      inspect_cell     args: {{\"damage_type\": \"...\", \"defense_layer\": \"...\", ...}}\n    \
                      get_frontier     args: {{}}\n    \
                      synthesize_finalists args: {{}}  # Tier 5: Claude curates frontier → narrated finalists\n    \
-                     save_finalists   args: {{\"finalists\": [...]}}  # persist curated finalists (Mode B write-back)\n\n\
+                     save_finalists   args: {{\"finalists\": [...]}}  # persist curated finalists (Mode B write-back)\n    \
+                     rescore_archive  args: {{}}  # maintenance: re-run PoB on every elite, drop over-budget trees (run after vendor pulls)\n\n\
                      ENV:\n    \
                      MOSSRAVEN_POB_PATH               PoB2 checkout (default: vendor/PathOfBuilding-PoE2)\n    \
                      MOSSRAVEN_ARCHIVE_PATH           Override archive.json location\n    \
@@ -204,6 +205,7 @@ async fn run_tool_call(tool: &str, args_json: &str, pob_path: &str) -> anyhow::R
         "get_frontier" => surface.get_frontier().await,
         "synthesize_finalists" => surface.synthesize_finalists().await,
         "save_finalists" => surface.save_finalists(args).await,
+        "rescore_archive" => surface.rescore_archive().await,
         other => return Err(anyhow::anyhow!("unknown tool: {other}")),
     };
 
@@ -1139,6 +1141,86 @@ impl ControlSurface for ServiceControlSurface {
         Ok(json!({
             "saved": finalists.len(),
             "dir": dir.display().to_string(),
+        }))
+    }
+
+    /// Maintenance: re-run Tier 3 on every archive elite. Refreshes stats
+    /// (incl. the passive-point fields older entries never measured) and
+    /// DROPS entries whose tree exceeds the budget — PoB scores illegal
+    /// trees without complaint, so anything archived before the legality
+    /// guard landed may be unbuildable in-game.
+    async fn rescore_archive(&self) -> Result<Value, McpError> {
+        self.ctx.archive.refresh_from_disk(&self.ctx.archive_path);
+        let snap = self.ctx.archive.snapshot();
+        if snap.is_empty() {
+            return Ok(json!({ "rescored": 0, "dropped": 0, "kept_stale": 0 }));
+        }
+        let batch: Vec<(String, String)> = snap
+            .iter()
+            .enumerate()
+            .map(|(i, (_, e))| (format!("cell-{i}"), e.pob_xml.clone()))
+            .collect();
+        let scored = self
+            .ctx
+            .engine
+            .tier3
+            .score(batch)
+            .await
+            .map_err(|e| McpError::ToolFailed(format!("rescore_archive: tier3: {e}")))?;
+        let by_id: std::collections::HashMap<String, _> = scored.into_iter().collect();
+
+        let data_version = self.ctx.engine.state.lock().config.data_version.clone();
+        let mut kept = Vec::new();
+        let (mut dropped, mut stale) = (0usize, 0usize);
+        for (i, (coords, mut entry)) in snap.into_iter().enumerate() {
+            match by_id.get(&format!("cell-{i}")) {
+                Some(Ok(stats)) => {
+                    if stats.points_budget > 0 && stats.points_used > stats.points_budget {
+                        tracing::warn!(
+                            cell = %coords.as_path_segment(),
+                            variant = %entry.variant_id,
+                            points = format!("{}/{}", stats.points_used, stats.points_budget),
+                            old_dps = entry.stats.total_dps,
+                            "rescore: elite exceeds passive budget; dropped from archive"
+                        );
+                        dropped += 1;
+                        continue;
+                    }
+                    entry.stats = stats.clone();
+                    entry.data_version = data_version.clone();
+                    kept.push((coords, entry));
+                }
+                Some(Err(e)) => {
+                    tracing::warn!(
+                        cell = %coords.as_path_segment(),
+                        error = %e,
+                        "rescore: scoring failed; keeping stale entry"
+                    );
+                    stale += 1;
+                    kept.push((coords, entry));
+                }
+                None => {
+                    stale += 1;
+                    kept.push((coords, entry));
+                }
+            }
+        }
+        let rescored = kept.len() - stale;
+        let top_dps = kept
+            .iter()
+            .map(|(_, e)| e.stats.total_dps)
+            .fold(0.0_f64, f64::max);
+        self.ctx.archive.rebuild(kept);
+        self.ctx
+            .archive
+            .save_if_dirty(&self.ctx.archive_path)
+            .map_err(|e| McpError::ToolFailed(format!("rescore_archive: save: {e}")))?;
+        Ok(json!({
+            "rescored": rescored,
+            "dropped": dropped,
+            "kept_stale": stale,
+            "top_dps_after": top_dps,
+            "data_version": data_version,
         }))
     }
 }

@@ -101,6 +101,11 @@ pub fn control_surface_tools() -> Vec<ToolSchema> {
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolSchema {
+            name: "rescore_archive".into(),
+            description: "Maintenance: re-run Tier 3 (PoB) on every archive elite, refreshing stats (incl. passive-point legality) against the CURRENT vendor PoB version. Entries whose tree exceeds the passive point budget are dropped; scoring failures keep the stale entry with a warning. Run after each league patch / vendor pull, or after legality rules tighten.".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolSchema {
             name: "save_finalists".into(),
             description: "Persist curated finalists to the MossRaven data directory (finalists.json + per-finalist markdown guide, PoB XML, and import-code file). Mode A calls this automatically after synthesis; in Mode B the driving Claude calls it with the finalists it curated. Returns the directory written.".into(),
             input_schema: json!({
@@ -140,6 +145,14 @@ pub trait ControlSurface: Send + Sync {
     async fn save_finalists(&self, _args: Value) -> Result<Value, McpError> {
         Err(McpError::ToolFailed(
             "save_finalists not implemented on this ControlSurface".into(),
+        ))
+    }
+    /// Maintenance: re-score every archive elite with the current Tier 3 and
+    /// drop entries that fail hard legality (passive point budget). Default:
+    /// not implemented.
+    async fn rescore_archive(&self) -> Result<Value, McpError> {
+        Err(McpError::ToolFailed(
+            "rescore_archive not implemented on this ControlSurface".into(),
         ))
     }
 }
@@ -324,6 +337,7 @@ async fn call_tool<S: ControlSurface>(
         "get_frontier" => surface.get_frontier().await,
         "synthesize_finalists" => surface.synthesize_finalists().await,
         "save_finalists" => surface.save_finalists(args).await,
+        "rescore_archive" => surface.rescore_archive().await,
         other => Err(McpError::UnknownTool(other.to_string())),
     }
 }

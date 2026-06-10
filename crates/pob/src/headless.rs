@@ -132,6 +132,32 @@ pub struct BuildStats {
     pub cold_res: i32,
     pub lightning_res: i32,
     pub chaos_res: i32,
+    /// Passive point accounting, straight from PoB's own model
+    /// (`spec:CountAllocNodes()` + `Build.lua EstimatePlayerProgress`):
+    /// `points_used = used - min(ws1, ws2)` — paired weapon-set allocations
+    /// consume one weapon-set point, the imbalance eats normal points.
+    /// All serde-defaulted so pre-existing archive entries still parse;
+    /// `points_budget == 0` means "not measured" and skips viability gating.
+    #[serde(default)]
+    pub points_used: u32,
+    /// `(characterLevel - 1) + maxWeaponSets + ExtraPoints` — level-scaled,
+    /// stricter than PoB's own max-level warning (99 + ...): a level-98
+    /// finalist must be legal AT 98, not at a hypothetical 100.
+    #[serde(default)]
+    pub points_budget: u32,
+    /// Ascendancy points (PoB warns above 8).
+    #[serde(default)]
+    pub ascendancy_points_used: u32,
+    /// Secondary-ascendancy points (PoE2 dual ascendancies; capped 8 too).
+    #[serde(default)]
+    pub secondary_ascendancy_points_used: u32,
+    /// `max(weaponSet1Used, weaponSet2Used)` vs `maxWeaponSets + extra`.
+    #[serde(default)]
+    pub weapon_set_points_used: u32,
+    #[serde(default)]
+    pub weapon_set_points_budget: u32,
+    #[serde(default)]
+    pub character_level: u32,
 }
 
 impl PobHeadless {
@@ -418,6 +444,34 @@ impl PobHeadless {
 
         let effective_hp = lua_get!(calcs_output, "PhysicalMaximumHitTaken" => f64);
 
+        // Passive point accounting — PoB's own counters, not a reimplementation.
+        // `spec:CountAllocNodes()` → (used, asc, secondaryAsc, sockets, ws1, ws2);
+        // budgets per Build.lua: maxWeaponSets = total campaign quest points,
+        // ExtraPoints / PassivePointsToWeaponSetPoints from items and tree.
+        let (points_used, points_budget, asc_used, sec_asc_used, ws_used, ws_budget, character_level) = (|| {
+            let spec: mlua::Table = build.get("spec").ok()?;
+            let count: mlua::Function = spec.get("CountAllocNodes").ok()?;
+            let (used, asc, sec_asc, _sockets, ws1, ws2): (f64, f64, f64, f64, f64, f64) =
+                count.call(spec).ok()?;
+            let max_ws: f64 = build.get("maxWeaponSets").unwrap_or(0.0);
+            let extra: f64 = main_output.get("ExtraPoints").unwrap_or(0.0);
+            let extra_ws: f64 = main_output
+                .get("PassivePointsToWeaponSetPoints")
+                .unwrap_or(0.0);
+            let level: f64 = build.get("characterLevel").unwrap_or(100.0);
+            let normal = used - ws1.min(ws2);
+            Some((
+                normal as u32,
+                ((level - 1.0).max(0.0) + max_ws + extra) as u32,
+                asc as u32,
+                sec_asc as u32,
+                ws1.max(ws2) as u32,
+                (max_ws + extra_ws) as u32,
+                level as u32,
+            ))
+        })()
+        .unwrap_or((0, 0, 0, 0, 0, 0, 0));
+
         Ok(BuildStats {
             total_dps,
             effective_hp,
@@ -429,6 +483,13 @@ impl PobHeadless {
             cold_res,
             lightning_res,
             chaos_res,
+            points_used,
+            points_budget,
+            ascendancy_points_used: asc_used,
+            secondary_ascendancy_points_used: sec_asc_used,
+            weapon_set_points_used: ws_used,
+            weapon_set_points_budget: ws_budget,
+            character_level,
         })
     }
 

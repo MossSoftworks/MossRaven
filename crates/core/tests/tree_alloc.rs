@@ -103,6 +103,37 @@ fn allocated_notable_changes_pob_scored_stats() {
         "+Insightfulness: ES={:.0} DPS={:.0} EHP={:.0}",
         with_notable.energy_shield, with_notable.total_dps, with_notable.effective_hp
     );
+    eprintln!(
+        "points: seed {}/{} (lvl {}, asc {}+{}, ws {}/{}) → mutated {}/{}",
+        base.points_used,
+        base.points_budget,
+        base.character_level,
+        base.ascendancy_points_used,
+        base.secondary_ascendancy_points_used,
+        base.weapon_set_points_used,
+        base.weapon_set_points_budget,
+        with_notable.points_used,
+        with_notable.points_budget,
+    );
+    assert!(base.points_budget > 0, "point budget must be measured");
+    // The 4-hop path costs ≤4 REAL points (PoB's CountAllocNodes skips
+    // isFreeAllocate nodes — 2 of these 4 measured free on 0.5 data).
+    assert!(
+        with_notable.points_used > base.points_used
+            && with_notable.points_used <= base.points_used + 4,
+        "path cost out of range: {} → {}",
+        base.points_used,
+        with_notable.points_used
+    );
+    // Honesty check that motivated the whole budget feature: this fixture
+    // sits at EXACTLY budget (123/123 @ 98), so ANY costed growth is
+    // unbuildable in-game and the engine guard must be dropping it.
+    assert!(
+        with_notable.points_used > with_notable.points_budget,
+        "expected over-budget after growth: {}/{}",
+        with_notable.points_used,
+        with_notable.points_budget
+    );
 
     assert!(
         with_notable.energy_shield > base.energy_shield,

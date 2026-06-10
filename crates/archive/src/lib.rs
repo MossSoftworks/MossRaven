@@ -298,6 +298,19 @@ impl Archive {
         self.cells.read().get(coords).cloned()
     }
 
+    /// Replace the ENTIRE grid. For maintenance passes (rescore after a PoB
+    /// patch, legality purges, label migrations) where entries must be
+    /// updated even when the new stats are WORSE — `try_place`'s
+    /// improve-only rule would silently keep stale elites.
+    pub fn rebuild(&self, cells: Vec<(CellCoords, ArchiveEntry)>) {
+        let mut grid = self.cells.write();
+        grid.clear();
+        for (coords, entry) in cells {
+            grid.insert(coords, entry);
+        }
+        self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub fn filled_count(&self) -> usize {
         self.cells.read().len()
     }

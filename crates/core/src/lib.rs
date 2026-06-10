@@ -261,6 +261,10 @@ impl SearchEngine {
         // re-injected every 4th generation so the hypothesis basin keeps
         // getting explored from the root.
         let gen = self.gen_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Spare passive points on the parent (None = unmeasured, allow and
+        // let the post-score guard decide). Gates the forced tree exploration:
+        // a parent at budget makes every costed allocation a guaranteed drop.
+        let mut parent_spare_points: Option<u32> = None;
         let seed_xml = {
             let mut elites = self.archive.snapshot();
             if elites.is_empty() || gen % 4 == 0 {
@@ -274,10 +278,19 @@ impl SearchEngine {
                 });
                 let pool = elites.len().div_ceil(2);
                 let (coords, parent) = &elites[(gen / 4 * 3 + gen % 4 - 1) % pool];
+                if parent.stats.points_budget > 0 {
+                    parent_spare_points = Some(
+                        parent
+                            .stats
+                            .points_budget
+                            .saturating_sub(parent.stats.points_used),
+                    );
+                }
                 tracing::info!(
                     parent_dps = parent.stats.total_dps,
                     parent_cell = %coords.as_path_segment(),
                     pool,
+                    spare_points = ?parent_spare_points,
                     "steady-state parent: mutating archive elite"
                 );
                 parent.pob_xml.clone()
@@ -398,11 +411,22 @@ impl SearchEngine {
         // Offense notables first (cost order within each class): the DPS
         // floor is the binding viability constraint, and the close ring
         // around caster starts is mostly defense/utility.
+        // Budget gate: only force paths whose worst-case cost fits the
+        // parent's spare points (path cost ≤ listed hop count; free-allocate
+        // nodes can only make it cheaper). A parent at budget skips tree
+        // forcing entirely — items are the explorer there.
         let explore_order: Vec<&(String, usize, String)> = nearby
             .iter()
             .filter(|n| is_offense_notable(&n.2))
             .chain(nearby.iter().filter(|n| !is_offense_notable(&n.2)))
+            .filter(|n| parent_spare_points.is_none_or(|spare| n.1 as u32 <= spare))
             .collect();
+        if explore_order.is_empty() && !nearby.is_empty() {
+            tracing::info!(
+                spare_points = ?parent_spare_points,
+                "tree exploration skipped: no reachable notable fits the parent's spare points"
+            );
+        }
         let survivors: Vec<MutationProposal> = if explore_order.is_empty() {
             survivors
         } else {
@@ -484,6 +508,21 @@ impl SearchEngine {
                         Some(p) => p,
                         None => continue,
                     };
+                    // ILLEGALITY GUARD: over-budget trees never enter the
+                    // archive. PoB calculates them happily, so without this
+                    // the compounding loop inflates trees forever and every
+                    // downstream elite/finalist inherits an unbuildable tree.
+                    // (budget==0 = unmeasured; skip — see BuildStats docs.)
+                    if stats.points_budget > 0 && stats.points_used > stats.points_budget {
+                        tracing::warn!(
+                            variant_id = %id,
+                            points_used = stats.points_used,
+                            points_budget = stats.points_budget,
+                            level = stats.character_level,
+                            "variant exceeds passive point budget; dropped (not archived)"
+                        );
+                        continue;
+                    }
                     let hint = proposal
                         .cell_focus
                         .as_deref()

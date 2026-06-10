@@ -24,6 +24,8 @@ pub const DPS_META: f64 = 10_000_000.0;
 pub const MIN_EHP: f64 = 5_000.0;
 pub const RES_CAP: i32 = 75;
 pub const MIN_CHAOS_RES: i32 = -30;
+/// PoB warns above 8 ascendancy points per ascendancy (Build.lua `ascMax`).
+pub const ASC_POINT_CAP: u32 = 8;
 
 /// Which community band a DPS number lands in.
 pub fn dps_band(dps: f64) -> &'static str {
@@ -82,6 +84,38 @@ pub fn check(stats: &BuildStats) -> ViabilityReport {
         ));
     }
 
+    // Passive point legality — PoB calculates over-budget trees without
+    // complaint, so an evolutionary loop would otherwise inflate trees
+    // forever. Budgets come from PoB's own model (level-scaled, see
+    // BuildStats docs). `points_budget == 0` = stats predate the field or
+    // headless couldn't measure: skip rather than fail history.
+    if stats.points_budget > 0 {
+        if stats.points_used > stats.points_budget {
+            failures.push(format!(
+                "passive points {} > {} budget at level {} — not buildable in-game",
+                stats.points_used, stats.points_budget, stats.character_level
+            ));
+        }
+        if stats.ascendancy_points_used > ASC_POINT_CAP {
+            failures.push(format!(
+                "ascendancy points {} > {} cap",
+                stats.ascendancy_points_used, ASC_POINT_CAP
+            ));
+        }
+        if stats.secondary_ascendancy_points_used > ASC_POINT_CAP {
+            failures.push(format!(
+                "secondary ascendancy points {} > {} cap",
+                stats.secondary_ascendancy_points_used, ASC_POINT_CAP
+            ));
+        }
+        if stats.weapon_set_points_used > stats.weapon_set_points_budget {
+            failures.push(format!(
+                "weapon-set points {} > {} budget",
+                stats.weapon_set_points_used, stats.weapon_set_points_budget
+            ));
+        }
+    }
+
     ViabilityReport {
         pass: failures.is_empty(),
         dps_band: dps_band(stats.total_dps),
@@ -138,5 +172,43 @@ mod tests {
         assert!(!r.pass);
         // dps + ehp + 3 elemental res + chaos = 6 distinct failures
         assert_eq!(r.failures.len(), 6, "{:?}", r.failures);
+    }
+
+    #[test]
+    fn over_budget_tree_fails_legality() {
+        let mut s = stats(650_000.0, 6_500.0, 75, 10);
+        s.points_used = 130;
+        s.points_budget = 121;
+        s.character_level = 98;
+        let r = check(&s);
+        assert!(!r.pass);
+        assert!(
+            r.failures.iter().any(|f| f.contains("not buildable")),
+            "{:?}",
+            r.failures
+        );
+    }
+
+    #[test]
+    fn zero_budget_means_unmeasured_and_skips_point_gates() {
+        // Pre-existing archive entries deserialize with all point fields 0 —
+        // they must not retroactively fail on legality they never measured.
+        let mut s = stats(650_000.0, 6_500.0, 75, 10);
+        s.points_used = 999;
+        let r = check(&s);
+        assert!(r.pass, "{:?}", r.failures);
+    }
+
+    #[test]
+    fn weapon_set_and_ascendancy_overruns_each_report() {
+        let mut s = stats(650_000.0, 6_500.0, 75, 10);
+        s.points_budget = 121;
+        s.points_used = 100;
+        s.ascendancy_points_used = 9;
+        s.secondary_ascendancy_points_used = 9;
+        s.weapon_set_points_used = 30;
+        s.weapon_set_points_budget = 24;
+        let r = check(&s);
+        assert_eq!(r.failures.len(), 3, "{:?}", r.failures);
     }
 }
