@@ -615,12 +615,16 @@ pub fn coords_from_stats(
     let role = get(2).unwrap_or_else(|| "boss".to_string());
     let scaling_vector = get(3).unwrap_or_else(|| "unknown".to_string());
 
+    // Canonical labels only: snap hint fuzz ("supports"/"support-swap") and
+    // schema echoes ("scaling_vector" as a literal value) to the whitelist
+    // so the grid never fragments — every fragment hides an elite check.
     CellCoords {
         damage_type,
         defense_layer,
         role,
         scaling_vector,
     }
+    .normalized()
 }
 
 /// Trait re-exported for symmetry with the workspace surface. (The actual

@@ -81,6 +81,134 @@ impl CellCoords {
             self.damage_type, self.defense_layer, self.role, self.scaling_vector
         )
     }
+
+    /// Canonical form: each axis snapped to its whitelist via synonym
+    /// mapping; junk → "unknown". LLM cell hints leak schema literals
+    /// ("scaling_vector" as a value) and synonym fuzz ("supports" vs
+    /// "support-swap" vs "support") that fragments the MAP-Elites grid —
+    /// every fragment hides a real comparison the elite check should have
+    /// made. Applied at placement AND as a load-time migration.
+    pub fn normalized(&self) -> CellCoords {
+        CellCoords {
+            damage_type: normalize_axis(&self.damage_type, DAMAGE_SYNONYMS, DAMAGE_TYPES),
+            defense_layer: normalize_axis(&self.defense_layer, DEFENSE_SYNONYMS, DEFENSE_LAYERS),
+            role: normalize_axis(&self.role, ROLE_SYNONYMS, ROLES),
+            scaling_vector: normalize_axis(&self.scaling_vector, SCALING_SYNONYMS, SCALING_VECTORS),
+        }
+    }
+}
+
+const DAMAGE_TYPES: &[&str] = &["physical", "fire", "cold", "lightning", "chaos", "minion"];
+const DAMAGE_SYNONYMS: &[(&str, &str)] = &[
+    ("phys", "physical"),
+    ("ele", "unknown"),
+    ("elemental", "unknown"), // mixed-element: no single honest bucket
+    ("summon", "minion"),
+    ("minions", "minion"),
+];
+
+const DEFENSE_LAYERS: &[&str] = &["life", "es", "evasion", "armour", "hybrid", "ward"];
+const DEFENSE_SYNONYMS: &[(&str, &str)] = &[
+    ("energy-shield", "es"),
+    ("energy_shield", "es"),
+    ("energyshield", "es"),
+    ("shield", "es"),
+    ("armor", "armour"),
+    ("eva", "evasion"),
+    ("dodge", "evasion"),
+    ("hp", "life"),
+];
+
+const ROLES: &[&str] = &["boss", "clear", "hybrid"];
+const ROLE_SYNONYMS: &[(&str, &str)] = &[
+    ("bossing", "boss"),
+    ("boss-killer", "boss"),
+    ("bosskiller", "boss"),
+    ("single-target", "boss"),
+    ("st", "boss"),
+    ("pinnacle", "boss"),
+    ("mapping", "clear"),
+    ("mapper", "clear"),
+    ("map", "clear"),
+    ("maps", "clear"),
+    ("aoe", "clear"),
+    ("clear-speed", "clear"),
+    ("clearspeed", "clear"),
+    ("all-round", "hybrid"),
+    ("all-rounder", "hybrid"),
+    ("allrounder", "hybrid"),
+    ("general", "hybrid"),
+    ("balanced", "hybrid"),
+];
+
+const SCALING_VECTORS: &[&str] = &[
+    "gem-levels",
+    "support",
+    "tree",
+    "attribute-stack",
+    "unique",
+    "crit",
+    "weapon-swap",
+    "minion",
+    "aura",
+];
+const SCALING_SYNONYMS: &[(&str, &str)] = &[
+    ("gem-level", "gem-levels"),
+    ("gemlevels", "gem-levels"),
+    ("levels", "gem-levels"),
+    ("level", "gem-levels"),
+    ("quality", "gem-levels"),
+    ("supports", "support"),
+    ("support-swap", "support"),
+    ("support-removal", "support"),
+    ("support-gems", "support"),
+    ("links", "support"),
+    ("tree-keystone", "tree"),
+    ("keystone", "tree"),
+    ("keystones", "tree"),
+    ("notable", "tree"),
+    ("notables", "tree"),
+    ("passives", "tree"),
+    ("passive", "tree"),
+    ("tree-notable", "tree"),
+    ("unique-driven", "unique"),
+    ("uniques", "unique"),
+    ("unique-item", "unique"),
+    ("attr-stack", "attribute-stack"),
+    ("attribute", "attribute-stack"),
+    ("attributes", "attribute-stack"),
+    ("int-stack", "attribute-stack"),
+    ("str-stack", "attribute-stack"),
+    ("dex-stack", "attribute-stack"),
+    ("critical", "crit"),
+    ("crit-chance", "crit"),
+    ("weapon-set", "weapon-swap"),
+    ("weaponset", "weapon-swap"),
+    ("weapon", "weapon-swap"),
+    ("minions", "minion"),
+    ("auras", "aura"),
+];
+
+/// Snap one axis value to its whitelist: sanitize → synonym map → whitelist
+/// membership → "unknown". Schema-literal echoes ("scaling_vector" as a
+/// value) fail the whitelist and land in "unknown" like any other junk.
+fn normalize_axis(raw: &str, synonyms: &[(&str, &str)], whitelist: &[&str]) -> String {
+    let mut s: String = raw
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_whitespace() || c == '_' { '-' } else { c })
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    s.truncate(24);
+    let s = s.trim_matches('-');
+    if let Some((_, canon)) = synonyms.iter().find(|(from, _)| *from == s) {
+        return canon.to_string();
+    }
+    if whitelist.contains(&s) {
+        return s.to_string();
+    }
+    "unknown".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +237,31 @@ enum LoadOutcome {
     Loaded(Archive),
     Missing,
     Corrupt,
+}
+
+/// Snap every cell to canonical coords, merging collisions by keeping the
+/// higher-DPS elite. Returns the map + how many entries were re-labeled or
+/// merged away (0 = data was already canonical).
+fn normalize_cells(
+    cells: Vec<(CellCoords, ArchiveEntry)>,
+) -> (HashMap<CellCoords, ArchiveEntry>, usize) {
+    let mut map: HashMap<CellCoords, ArchiveEntry> = HashMap::new();
+    let mut migrated = 0usize;
+    for (coords, entry) in cells {
+        let canon = coords.normalized();
+        if canon != coords {
+            migrated += 1;
+        }
+        match map.get(&canon) {
+            Some(cur) if cur.stats.total_dps >= entry.stats.total_dps => {
+                migrated += 1; // entry merged away by a better elite
+            }
+            _ => {
+                map.insert(canon, entry);
+            }
+        }
+    }
+    (map, migrated)
 }
 
 fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {
@@ -170,12 +323,19 @@ impl Archive {
         };
         match serde_json::from_str::<ArchiveSnapshot>(&text) {
             Ok(snap) => {
-                let map: HashMap<_, _> = snap.cells.into_iter().collect();
-                tracing::info!(?path, count = map.len(), "archive loaded");
+                // Label migration: snap every loaded cell to canonical
+                // coords. Collisions (two fuzz-labels mapping to one cell)
+                // keep the higher-DPS elite — the comparison the fragmented
+                // grid never made.
+                let (map, migrated) = normalize_cells(snap.cells);
+                tracing::info!(?path, count = map.len(), migrated, "archive loaded");
                 let a = Self {
                     cells: RwLock::new(map),
                     ..Self::default()
                 };
+                if migrated > 0 {
+                    a.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
                 *a.loaded_mtime.lock() = file_mtime(path);
                 LoadOutcome::Loaded(a)
             }
@@ -218,6 +378,9 @@ impl Archive {
         {
             let mut cells = self.cells.write();
             for (coords, entry) in snap.cells {
+                // Same label migration as load: an external writer running an
+                // older binary may still produce fuzz labels.
+                let coords = coords.normalized();
                 match cells.get(&coords) {
                     Some(cur) if cur.stats.total_dps >= entry.stats.total_dps => {}
                     _ => {
@@ -323,6 +486,81 @@ impl Archive {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    fn raw(dt: &str, dl: &str, role: &str, sv: &str) -> CellCoords {
+        CellCoords {
+            damage_type: dt.into(),
+            defense_layer: dl.into(),
+            role: role.into(),
+            scaling_vector: sv.into(),
+        }
+    }
+
+    #[test]
+    fn synonyms_snap_to_canonical() {
+        let c = raw("Phys", "Energy Shield", "boss-killer", "support-swap").normalized();
+        assert_eq!(c.as_path_segment(), "physical/es/boss/support");
+        let c = raw("cold", "armor", "mapping", "tree-keystone").normalized();
+        assert_eq!(c.as_path_segment(), "cold/armour/clear/tree");
+    }
+
+    #[test]
+    fn schema_echoes_and_junk_land_in_unknown() {
+        // Observed live: the LLM echoed the schema's placeholder names.
+        let c = raw("damage_type", "defense_layer", "role", "scaling_vector").normalized();
+        assert_eq!(c.as_path_segment(), "unknown/unknown/unknown/unknown");
+        let c = raw("physical", "es", "clear", "the entire prose of why this scales").normalized();
+        assert_eq!(c.scaling_vector, "unknown");
+    }
+
+    #[test]
+    fn canonical_labels_pass_through_unchanged() {
+        let c = raw("chaos", "hybrid", "clear", "attribute-stack");
+        assert_eq!(c.normalized(), c);
+    }
+
+    #[test]
+    fn load_migrates_fuzz_labels_and_merges_collisions() {
+        let path = std::env::temp_dir().join(format!(
+            "mossraven-test-labels-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mk = |dps: f64| ArchiveEntry {
+            variant_id: format!("v{dps}"),
+            pob_xml: String::new(),
+            stats: BuildStats { total_dps: dps, ..Default::default() },
+            origin_hypothesis: None,
+            data_version: "test".into(),
+        };
+        // Two fuzz labels that BOTH canonicalize to physical/es/boss/support,
+        // plus one schema echo. Written raw, bypassing normalization.
+        let snap = ArchiveSnapshot {
+            version: 1,
+            cells: vec![
+                (raw("physical", "es", "boss", "supports"), mk(100.0)),
+                (raw("physical", "es", "boss", "support-swap"), mk(250.0)),
+                (raw("physical", "es", "boss", "scaling_vector"), mk(50.0)),
+            ],
+        };
+        std::fs::write(&path, serde_json::to_string(&snap).unwrap()).unwrap();
+
+        let a = Archive::load(&path).unwrap();
+        assert_eq!(a.filled_count(), 2, "two fuzz labels merged into one cell");
+        let merged = a
+            .read(&raw("physical", "es", "boss", "support"))
+            .expect("canonical cell exists");
+        assert_eq!(merged.stats.total_dps, 250.0, "collision kept the better elite");
+        assert!(a.read(&raw("physical", "es", "boss", "unknown")).is_some());
+        // Migration marks dirty so the canonical form persists.
+        assert!(a.save_if_dirty(&path).unwrap(), "migrated load must save");
+        let _ = std::fs::remove_file(&path);
     }
 }
 
