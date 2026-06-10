@@ -97,14 +97,37 @@ fn parse_args() -> Args {
 async fn main() -> anyhow::Result<()> {
     let args = parse_args();
 
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // Set up logging: stderr (for WPF capture / interactive use) + a per-run
+    // log file in %APPDATA%/Moss/MossRaven/logs/. Lets a future Claude comb
+    // through prior cascade runs without the user re-pasting console output.
+    let log_path = open_session_log_file();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    match log_path.as_ref() {
+        Some((path, file)) => {
+            // Fan out to BOTH stderr and the log file. The file gets the same
+            // structured trace events; stderr stays interactive so the WPF's
+            // existing stderr-capture pipeline keeps working.
+            use tracing_subscriber::fmt::writer::MakeWriterExt;
+            let file_writer = std::sync::Mutex::new(file.try_clone().expect("clone log fd"));
+            let tee = std::io::stderr.and(move || file_writer.lock().unwrap().try_clone().unwrap());
+            tracing_subscriber::fmt()
+                .with_writer(tee)
+                .with_ansi(false)
+                .with_env_filter(env_filter)
+                .init();
+            tracing::info!(log_file = %path.display(), "session log file opened");
+            prune_old_session_logs(path.parent().unwrap_or_else(|| std::path::Path::new(".")));
+        }
+        None => {
+            tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_ansi(false)
+                .with_env_filter(env_filter)
+                .init();
+            tracing::warn!("could not open session log file; logging to stderr only");
+        }
+    }
 
     let pob_path = resolve_pob_path(args.pob_path.as_deref());
 
@@ -165,6 +188,63 @@ async fn run_tool_call(tool: &str, args_json: &str, pob_path: &str) -> anyhow::R
     let value = result.map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
+}
+
+/// Open a per-invocation log file under `%APPDATA%/Moss/MossRaven/logs/`.
+/// Each service spawn creates a fresh file named with the unix timestamp;
+/// we keep the last 20 so a future Claude can browse `[--tool, --headless,
+/// daemon]` runs without the user re-pasting console output. Returns None
+/// if we can't create the dir (e.g. headless CI, locked filesystem) — the
+/// caller falls back to stderr-only logging.
+fn open_session_log_file() -> Option<(std::path::PathBuf, std::fs::File)> {
+    let base = directories::ProjectDirs::from("", "Moss", "MossRaven")
+        .map(|p| p.data_dir().to_path_buf())
+        .or_else(|| std::env::var_os("APPDATA").map(|a| {
+            std::path::PathBuf::from(a).join("Moss").join("MossRaven")
+        }))?;
+    let logs = base.join("logs");
+    std::fs::create_dir_all(&logs).ok()?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Include the process id so two services launched in the same second
+    // (e.g. WPF + a parallel `--tool` invocation) don't clobber each other.
+    let pid = std::process::id();
+    let path = logs.join(format!("service-{ts}-{pid}.log"));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+    Some((path, file))
+}
+
+/// Keep the last N session log files (oldest deleted first). N=20 = roughly
+/// the last day of dev iteration without runaway disk use.
+fn prune_old_session_logs(logs_dir: &std::path::Path) {
+    const KEEP: usize = 20;
+    let Ok(rd) = std::fs::read_dir(logs_dir) else { return; };
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("service-")
+        })
+        .filter_map(|e| {
+            let path = e.path();
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((mtime, path))
+        })
+        .collect();
+    if files.len() <= KEEP { return; }
+    // Sort newest first; delete the tail.
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in files.into_iter().skip(KEEP) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Find the PoB2 checkout. CWD-relative breaks when the WPF shell launches

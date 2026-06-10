@@ -18,6 +18,19 @@ use thiserror::Error;
 
 pub mod vocab;
 
+/// Parse the sentinel `[retry-after:N]` prefix that `chat_once` embeds in the
+/// 429 body when the provider sent a `Retry-After: N` header. N is delta-seconds.
+fn parse_retry_after_ms(body: &str) -> Option<u64> {
+    let prefix = "[retry-after:";
+    let start = body.find(prefix)?;
+    let after = start + prefix.len();
+    let end = body[after..].find(']')?;
+    let secs: u64 = body[after..after + end].trim().parse().ok()?;
+    // Cap at 5 minutes — if the provider asks for more, something is wrong
+    // and we'd rather fail fast.
+    Some((secs * 1000).min(5 * 60_000))
+}
+
 /// Find the first `<Gem nameSpec="X">` inside the `<Skill mainActiveSkill="1">`
 /// block — that's the scored active skill whose level actually moves DPS in
 /// POE2 (supports are level-agnostic). Returns None if the build XML doesn't
@@ -207,40 +220,48 @@ impl OpenAiCompatSurrogate {
 
     /// POST to {base_url}/chat/completions and return the assistant message
     /// content. Non-2xx other than 429 surfaces as SurrogateError::BadStatus
-    /// with the response body. 429 (rate limit) triggers an exponential
-    /// backoff with up to 3 retries — Cerebras's free tier RPM limit makes
-    /// this hit constantly on multi-gen runs, so we paper over it transparently.
+    /// with the response body.
+    ///
+    /// 429 handling — Cerebras free tier is ~30 req/min PER MODEL. A burst of
+    /// 2 calls/gen × ~2 gens within 5s saturates the bucket and triggers a
+    /// 429 that doesn't clear until the next minute-aligned refill. We:
+    ///   1. Parse the `Retry-After` header if present (seconds) and honor it.
+    ///   2. Otherwise back off 10s → 30s → 60s → 60s (up to 4 retries, ~2.5
+    ///      minutes max wait). One refill cycle is 60s on Cerebras, so 60s
+    ///      is the right floor; doubling beyond doesn't help.
+    /// Logs every retry so the user can see why a long gen is taking a while.
     async fn chat(&self, system: &str, user: &str) -> Result<String, SurrogateError> {
-        let mut delay_ms = 1000;
-        let mut last_429: Option<(u16, String)> = None;
-        for attempt in 0..4 {
+        let schedule_ms = [10_000u64, 30_000, 60_000, 60_000];
+        let mut last_err: Option<(u16, String)> = None;
+        for (attempt, &default_delay) in schedule_ms.iter().enumerate() {
             match self.chat_once(system, user).await {
-                Ok(s) => return Ok(s),
+                Ok(s) => {
+                    if attempt > 0 {
+                        tracing::info!(attempt, "surrogate recovered from 429");
+                    }
+                    return Ok(s);
+                }
                 Err(SurrogateError::BadStatus { status: 429, body }) => {
-                    last_429 = Some((429, body));
-                    if attempt == 3 {
+                    // Retry-After is captured inside chat_once and surfaced
+                    // via a sentinel prefix in body so we don't have to
+                    // restructure the error variant. Fall back to schedule.
+                    let retry_after_ms = parse_retry_after_ms(&body).unwrap_or(default_delay);
+                    last_err = Some((429, body));
+                    if attempt + 1 == schedule_ms.len() {
                         break;
                     }
                     tracing::warn!(
                         attempt = attempt + 1,
-                        delay_ms,
-                        "surrogate rate-limited (429); backing off"
+                        wait_ms = retry_after_ms,
+                        "surrogate rate-limited (429); backing off — Cerebras free tier RPM bucket refills every 60s"
                     );
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    // 1s -> 4s -> 15s -> bail. The Cerebras free-tier RPM
-                    // bucket refills every 60s, but a few short waits often
-                    // get through during a refill window.
-                    delay_ms = match delay_ms {
-                        1000 => 4000,
-                        4000 => 15000,
-                        _ => delay_ms,
-                    };
+                    tokio::time::sleep(std::time::Duration::from_millis(retry_after_ms)).await;
                     continue;
                 }
                 Err(other) => return Err(other),
             }
         }
-        let (status, body) = last_429
+        let (status, body) = last_err
             .unwrap_or((429, "rate limited (no body captured)".to_string()));
         Err(SurrogateError::BadStatus { status, body })
     }
@@ -264,11 +285,26 @@ impl OpenAiCompatSurrogate {
         }
         let resp = req.send().await?;
         let status = resp.status();
+        // Capture Retry-After before consuming the body. Cerebras returns it
+        // as a delta-seconds value; some providers use HTTP-date. We only
+        // care about the delta form for now.
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
         let text = resp.text().await?;
         if !status.is_success() {
+            // Embed Retry-After at the head of the body using a sentinel that
+            // the chat() retry loop knows to peel off. Keeps the public error
+            // shape (SurrogateError::BadStatus { status, body }) unchanged.
+            let body = match retry_after {
+                Some(s) => format!("[retry-after:{s}]\n{text}"),
+                None => text,
+            };
             return Err(SurrogateError::BadStatus {
                 status: status.as_u16(),
-                body: text,
+                body,
             });
         }
         let v: Value = serde_json::from_str(&text)
