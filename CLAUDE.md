@@ -44,5 +44,7 @@ definition of done). Keep README's status table truthful when component states c
 - **One git writer at a time.** Claude Code (Windows) and Cowork sessions must not run git mutations concurrently in this worktree.
 - The Cowork sandbox's file bridge can serve **stale or truncated views** of recently-edited files and can intermittently **corrupt `.git/index`** (zeroed signature). Recovery is always: delete `.git/index`, run `git reset` — worktree, objects, and refs are unaffected. Cowork sessions should (a) verify file content markers before staging, (b) check `git diff --cached --stat` before every commit, (c) prefer `GIT_INDEX_FILE=/tmp/...` for their operations, and (d) leave the in-repo index healthy when done.
 - Windows-side git locks (`.git/index.lock`): if stale, deleting it is the standard fix — but confirm no live git process first.
+- **Never pipe a long service run through `Select-Object -First N`** (or any early-terminating PS pipeline stage): when the pipe closes, PS 5.1 kills the native process mid-run (observed: exit 255, archive save lost at gen 4/8). Redirect to a file (`*> $env:TEMP\run.log`), then grep the file.
+- Maintenance after each vendor pull / legality change: `--tool rescore_archive` re-runs PoB on every elite, refreshes stats + version stamps, drops over-budget trees.
 - Never commit `vendor/` or any GGG data (fan-content policy: non-commercial, no asset redistribution). Fixture build XMLs stay gitignored.
 - No OpenAI keys anywhere. All keys via env vars — see `mossraven-service --help`.
