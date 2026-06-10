@@ -67,7 +67,9 @@ pub struct StepConfig {
 impl Default for StepConfig {
     fn default() -> Self {
         Self {
-            mutations_per_step: 8,
+            // 10 = one full pass of the MockSurrogate's deterministic axis
+            // set, and a healthier diversity budget for live providers too.
+            mutations_per_step: 10,
             // Lowered from 0.4/0.5 — the surrogate's cheap-score is too
             // aggressive for our use case: it kills "boring" mutations like
             // "Whirling Slash quality 0→20" which actually move DPS, while

@@ -829,14 +829,22 @@ impl SurrogateProvider for MockSurrogate {
         _seed_hypothesis: &str,
         count: usize,
     ) -> Result<Vec<MutationProposal>, SurrogateError> {
-        // Spread mock mutations across a handful of cells so the cascade
-        // exercises archive.try_place across multiple coords.
+        // One hint per axis, each with a DISTINCT role/scaling pair. The
+        // engine takes damage_type from gem-data truth and defense from
+        // stats, so role+scaling are the only hint-controlled coords — if
+        // two axes share a pair they collide into one cell and best-of-cell
+        // silently drops the other (observed: 10 variants → 7 cells).
         let cells = [
-            "cold/es/boss/unique-driven",
-            "lightning/evasion/clear/gem-levels",
-            "fire/armour/boss/tree-keystone",
-            "chaos/hybrid/clear/attribute-stack",
-            "physical/armour/boss/unique-driven",
+            "physical/es/clear/gem-levels",      // 0: L4
+            "physical/es/hybrid/gem-levels",     // 1: L8
+            "physical/es/boss/tree-keystone",    // 2: L12
+            "physical/es/clear/attribute-stack", // 3: L16
+            "physical/es/boss/gem-levels",       // 4: L20
+            "lightning/es/boss/unique-driven",   // 5: Spark swap
+            "physical/es/hybrid/attribute-stack",// 6: remove support
+            "chaos/es/boss/tree-keystone",       // 7: Contagion swap
+            "chaos/es/clear/unique-driven",      // 8: Essence Drain swap
+            "physical/es/boss/unique-driven",    // 9: add support
         ];
         // Find the main scored skill's gem name in the seed XML — the first
         // `<Gem nameSpec="...">` inside the `<Skill mainActiveSkill="1">`
@@ -846,15 +854,18 @@ impl SurrogateProvider for MockSurrogate {
         let main_skill_gem = find_main_skill_gem_name(seed_pob_xml).unwrap_or_else(|| "*".to_string());
         Ok((0..count)
             .map(|i| {
-                // Variant axes (deterministic, cycling):
-                //   i%7 == 5 → REAL gem swap of the scored skill (exercises the
-                //              GemDb gemId/skillId rewrite path; Spark is in
-                //              every PoE2 data set and is lightning — also
-                //              exercises ground-truth damage_type labeling)
-                //   i%7 == 6 → remove a support from the scored group
-                //   else     → main-skill level from the explore set
+                // Ten deterministic variant axes. Five main-skill level rungs
+                // for the DPS ladder, then composition mutations that exercise
+                // every real op AND populate multiple damage_type cells (the
+                // chaos swaps exist because concepts ask for chaos and the
+                // ground-truth labeler should have real chaos cells to label):
+                //   5 → swap main → Spark        (lightning)
+                //   6 → remove a support from the scored group
+                //   7 → swap main → Contagion    (chaos AoE DoT)
+                //   8 → swap main → Essence Drain (chaos projectile DoT)
+                //   9 → add Controlled Destruction (spell support) to the group
                 let levels = [4u32, 8, 12, 16, 20];
-                let (ops, desc): (Vec<MutationOp>, String) = match i % 7 {
+                let (ops, desc): (Vec<MutationOp>, String) = match i % 10 {
                     5 => (
                         vec![MutationOp::SwapGem {
                             old: main_skill_gem.clone(),
@@ -877,6 +888,26 @@ impl SurrogateProvider for MockSurrogate {
                             "mock fallback — no support to remove; quality the main skill".to_string(),
                         ),
                     },
+                    7 => (
+                        vec![MutationOp::SwapGem {
+                            old: main_skill_gem.clone(),
+                            new: "Contagion".to_string(),
+                        }],
+                        format!("mock swap — replace {main_skill_gem} with Contagion (chaos AoE DoT)"),
+                    ),
+                    8 => (
+                        vec![MutationOp::SwapGem {
+                            old: main_skill_gem.clone(),
+                            new: "Essence Drain".to_string(),
+                        }],
+                        format!("mock swap — replace {main_skill_gem} with Essence Drain (chaos DoT)"),
+                    ),
+                    9 => (
+                        vec![MutationOp::AddSupportGem {
+                            gem: "Controlled Destruction".to_string(),
+                        }],
+                        "mock add — socket Controlled Destruction into the scored group".to_string(),
+                    ),
                     _ => {
                         let level = levels[i % levels.len()];
                         (
