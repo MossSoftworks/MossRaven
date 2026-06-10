@@ -25,6 +25,20 @@ definition of done). Keep README's status table truthful when component states c
 - Surrogate vocab: refresh `scratch/poe2-mcp`, then `python scripts/extract-poe2-vocab.py`.
 - Archive entries are stamped `pob2:<version>` from the vendor `manifest.xml`; mismatched stamps mean re-score before trusting.
 
+## Session ritual (run at the START of every Claude conversation)
+
+1. **Scan the service logs**: `%APPDATA%\Moss\MossRaven\data\logs\service-*.log`
+   (last 20 runs) plus `%TEMP%\mossraven-ui.log` for `WARN`/`ERROR`/`error:`/
+   `FAIL`/`panicked`. The "missing node NNNNN" stderr lines are known fixture
+   tree-version skew (informational); everything else is actionable.
+2. For each distinct actionable finding: **create a task, fix it, and report
+   back only when the scan is clean (0 errors)** — Taylor's standing
+   instruction. Don't ask whether to fix; fix.
+3. Check no stale `mossraven-service` daemons are racing the run you're about
+   to do (`Get-Process | ? ProcessName -match mossraven`), and that
+   `dist\*.exe` mtimes match `target\release` (a stale dist binary silently
+   reintroduces fixed bugs through the WPF).
+
 ## Multi-agent / environment rules (learned the hard way, 2026-06-10)
 
 - **One git writer at a time.** Claude Code (Windows) and Cowork sessions must not run git mutations concurrently in this worktree.

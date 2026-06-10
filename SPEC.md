@@ -21,6 +21,20 @@ A completed discovery session delivers **5–10 recommended builds**. Each final
 1. **Current-patch PoB2 XML** — importable into desktop PoB2, generated against the vendored PoB2 version and version-stamped. "Current" is a living requirement: keep `vendor/PathOfBuilding-PoE2` tracking the live game.
 2. **Build guide** — leveling path (act milestones, gem/passive order) and endgame plan (final tree, gear priorities, breakpoints).
 3. **Dual-loadout design for clear vs. boss** — one character, minimal switching friction. Prefer PoE2's weapon-set swap (PoB2 XML already encodes it: `<ItemSet useSecondWeaponSet=…>` plus weapon-set passive points); the finalist XML carries both loadouts. If a build can't dual-loadout cleanly, its guide must say so explicitly.
+4. **All-content viability** — every recommended build must be able to **easily and cleanly clear all current content** (campaign through endgame bosses/pinnacles). The engine enforces this with a **viability gate**: hard floors on DPS, effective HP pool, and resistances (§1.1.1) checked against PoB's scored stats. A finalist failing the gate is never silently presented as endgame-ready — it ships with an explicit `viability: FAIL` flag and the verbatim failure list. Floors are league-currency: revisit each patch.
+
+#### 1.1.1 Viability floors (v1 — PoE2 0.5 "Runes of Aldur")
+
+| Stat | Floor | Rationale |
+|---|---|---|
+| `total_dps` | ≥ 300,000 | community red-map / pinnacle comfort baseline; below this, fights are slogs |
+| `effective_hp` | ≥ 5,000 | survives endgame white-mob burst (phys max-hit proxy) |
+| fire / cold / lightning res | = 75 (capped) | uncapped elemental res is the #1 pool shredder |
+| chaos res | ≥ −30 | chaos-heavy 0.5 endgame (Fate of the Vaal systems) |
+
+The gate is **reported, not filtering, in v1** — failing cells stay in the
+archive (a failing cell is still discovery signal), but the frontier API and
+every Tier-5 guide must surface pass/fail + failures.
 
 Status (2026-06-10): nothing generated yet — `crates/pob/tests/fixtures/*.xml` are hand-collected *inputs* (parity/seeds), not outputs. The loop has not yet produced an archive or Tier-5 finalists.
 
@@ -28,6 +42,7 @@ Tracked implications:
 
 - Tier-5 synthesis must emit guide prose (leveling + endgame + swap notes), not just stats and an import code.
 - Variant representation and mutation operators must become weapon-set aware, so clear/boss duality is *searched*, not bolted on afterwards.
+- The viability gate needs richer inputs over time (sustain, ailment immunity, movement) — v1's four floors are the deliberately-blunt start.
 
 ---
 

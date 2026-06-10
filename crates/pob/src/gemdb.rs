@@ -137,6 +137,44 @@ impl GemDb {
         self.by_name.get(&display_name.to_lowercase())
     }
 
+    /// Entity-vocabulary block for the Tier-2 proposal prompt, generated from
+    /// the LIVE game data this db was parsed from — every listed name is
+    /// guaranteed applier-valid (the swap/add ops resolve through this same
+    /// db). Replaces the embedded 0.2/0.3-era datamined list.
+    pub fn prompt_block(&self, max_skills: usize, max_supports: usize) -> String {
+        let mut skills: Vec<&GemInfo> = Vec::new();
+        let mut supports: Vec<&GemInfo> = Vec::new();
+        for info in self.by_name.values() {
+            if info.is_support() {
+                supports.push(info);
+            } else {
+                skills.push(info);
+            }
+        }
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        supports.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let mut out = String::with_capacity(16 * 1024);
+        out.push_str("POE2 SKILL GEMS (live game data — use these names VERBATIM):\n");
+        for s in skills.iter().take(max_skills) {
+            out.push_str("  ");
+            out.push_str(&s.name);
+            if let Some(d) = s.damage_type() {
+                out.push_str(" [");
+                out.push_str(d);
+                out.push(']');
+            }
+            out.push('\n');
+        }
+        out.push_str("\nPOE2 SUPPORT GEMS (live game data — use these names VERBATIM):\n");
+        for s in supports.iter().take(max_supports) {
+            out.push_str("  ");
+            out.push_str(&s.name);
+            out.push('\n');
+        }
+        out
+    }
+
     pub fn len(&self) -> usize {
         self.by_name.len()
     }

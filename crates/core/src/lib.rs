@@ -26,6 +26,7 @@ use thiserror::Error;
 use tier3::Tier3Backend;
 
 pub mod mutate;
+pub mod viability;
 
 /// Cheap non-cryptographic 64-bit hash for "did this string change" diffs in
 /// trace logs. FNV-1a — no extra deps, distinguishes 1-char changes reliably.

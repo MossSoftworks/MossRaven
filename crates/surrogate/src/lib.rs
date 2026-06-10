@@ -308,6 +308,13 @@ impl OpenAiCompatConfig {
 pub struct OpenAiCompatSurrogate {
     cfg: OpenAiCompatConfig,
     http: reqwest::Client,
+    /// Entity-vocabulary block spliced into the proposal prompt. Defaults to
+    /// the embedded (0.2/0.3-era) datamined list; the service overrides it
+    /// with one generated from the live vendor Gems.lua (960 gems @ 0.5) so
+    /// the model can only name gems the applier's GemDb will accept —
+    /// without the override, "Added Cold Damage"-style stale names get
+    /// proposed and skipped (wasted variants).
+    vocab_block: Option<String>,
 }
 
 impl OpenAiCompatSurrogate {
@@ -315,7 +322,13 @@ impl OpenAiCompatSurrogate {
         Self {
             cfg,
             http: reqwest::Client::new(),
+            vocab_block: None,
         }
+    }
+
+    pub fn with_vocab_block(mut self, block: String) -> Self {
+        self.vocab_block = Some(block);
+        self
     }
 
     /// POST to {base_url}/chat/completions and return the assistant message
@@ -526,10 +539,13 @@ impl SurrogateProvider for OpenAiCompatSurrogate {
         seed_hypothesis: &str,
         count: usize,
     ) -> Result<Vec<MutationProposal>, SurrogateError> {
-        // Vocab block is datamined (HivemindOverlord/poe2-mcp) and embedded
-        // into the binary at compile time — no I/O at request time. See
-        // crates/surrogate/src/vocab.rs for the loader.
-        let vocab_block = vocab::prompt_block(200, 200);
+        // Vocab block: live Gems.lua-derived when the service provided one
+        // (preferred — every name is applier-valid), else the embedded
+        // datamined fallback. No I/O at request time either way.
+        let vocab_block = self
+            .vocab_block
+            .clone()
+            .unwrap_or_else(|| vocab::prompt_block(200, 200));
         let system = format!(
             "You are a Path of Exile 2 (NOT Path of Exile 1) build-mutation generator. \
              \n\nCRITICAL: This is POE 2 (early access v0.3+). Do NOT reference any of these \

@@ -240,7 +240,7 @@
                         </Expander.Header>
                         <Border Background="{DynamicResource BgBrush}" Padding="10,6">
                             <StackPanel>
-                                <TextBlock Text="Claude dreams plausible hypotheses from your concept."
+                                <TextBlock Text="Tier-1 LLM (Claude / Gemini / Groq — or your concept verbatim in Mode B) frames the hypothesis and picks a class-matched seed build."
                                            Foreground="{DynamicResource DimBrush}"
                                            FontSize="11" Margin="0,0,0,4"/>
                                 <TextBox x:Name="T1Log"
@@ -287,7 +287,7 @@
                         </Expander.Header>
                         <Border Background="{DynamicResource BgBrush}" Padding="10,6">
                             <StackPanel>
-                                <TextBlock Text="Each generation = one batch of N concrete mutations off the seed."
+                                <TextBlock Text="LLM failover chain (Cerebras → Groq → Gemini) proposes 10 structured mutations per generation — gem levels, swaps, support add/remove, weapon-set flips."
                                            Foreground="{DynamicResource DimBrush}"
                                            FontSize="11" Margin="0,0,0,4"/>
                                 <TextBox x:Name="T2Log"
@@ -334,7 +334,7 @@
                         </Expander.Header>
                         <Border Background="{DynamicResource BgBrush}" Padding="10,6">
                             <StackPanel>
-                                <TextBlock Text="LuaJIT PoB calc returns BuildStats per variant. Single source of truth."
+                                <TextBlock Text="Embedded PoB2 (LuaJIT) scores every variant — DPS/EHP/resists, stamped with the live PoB2 data version. Single source of truth."
                                            Foreground="{DynamicResource DimBrush}"
                                            FontSize="11" Margin="0,0,0,4"/>
                                 <TextBox x:Name="T3Log"
@@ -381,7 +381,7 @@
                         </Expander.Header>
                         <Border Background="{DynamicResource BgBrush}" Padding="10,6">
                             <StackPanel>
-                                <TextBlock Text="Cerebras judges scored variants for novelty + plausibility. Drops the boring."
+                                <TextBlock Text="Pre-sim prune: the Tier-2 LLM cheap-scores interest + plausibility before PoB time is spent. Post-sim smart pruning is on the roadmap."
                                            Foreground="{DynamicResource DimBrush}"
                                            FontSize="11" Margin="0,0,0,4"/>
                                 <TextBox x:Name="T4Log"
@@ -395,7 +395,7 @@
                                          BorderThickness="0"
                                          FontFamily="Cascadia Mono, Consolas"
                                          FontSize="11"
-                                         Text="(no prunings yet — currently pre-sim pruning only; smart post-sim pruning is next session)"/>
+                                         Text="(no prunings yet — pre-sim pruning only; post-sim viability gating is on the roadmap)"/>
                             </StackPanel>
                         </Border>
                     </Expander>
@@ -419,7 +419,7 @@
                                                Foreground="{DynamicResource TextBrush}"
                                                FontWeight="SemiBold"
                                                FontSize="13"/>
-                                    <TextBlock Text="Claude-curated viable builds. Click to copy PoB code."
+                                    <TextBlock Text="Curated builds with full guides. Click = copy PoB code · History = every saved run."
                                                Foreground="{DynamicResource DimBrush}"
                                                FontSize="11"/>
                                 </StackPanel>

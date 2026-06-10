@@ -463,6 +463,12 @@ async fn build_context(pob_path: &str) -> Context {
     // Free tiers saturate independently (Cerebras spent a morning returning
     // queue_exceeded platform-wide); one being down must not stall the
     // cascade while the others sit idle. No keys at all → deterministic mock.
+    // Gem database from the vendored Gems.lua — powers real gem swaps,
+    // ground-truth damage_type labels, AND the live prompt vocabulary below
+    // (so the LLM can only name gems the applier will accept).
+    let gem_db = Arc::new(mossraven_pob::GemDb::load(std::path::Path::new(pob_path)));
+    let live_vocab = (!gem_db.is_empty()).then(|| gem_db.prompt_block(400, 300));
+
     let mut providers: Vec<(String, Arc<dyn SurrogateProvider>)> = Vec::new();
     let env_nonempty = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     if let Some(key) = env_nonempty("CEREBRAS_API_KEY") {
@@ -474,7 +480,11 @@ async fn build_context(pob_path: &str) -> Context {
             cfg.model = model;
         }
         tracing::info!(model = %cfg.model, "surrogate provider: cerebras");
-        providers.push(("cerebras".into(), Arc::new(OpenAiCompatSurrogate::new(cfg))));
+        {
+            let mut sur = OpenAiCompatSurrogate::new(cfg);
+            if let Some(v) = &live_vocab { sur = sur.with_vocab_block(v.clone()); }
+            providers.push(("cerebras".into(), Arc::new(sur)));
+        }
     }
     if let Some(key) = env_nonempty("GROQ_API_KEY") {
         let mut cfg = OpenAiCompatConfig::groq_default(key);
@@ -482,7 +492,11 @@ async fn build_context(pob_path: &str) -> Context {
             cfg.model = model;
         }
         tracing::info!(model = %cfg.model, "surrogate provider: groq");
-        providers.push(("groq".into(), Arc::new(OpenAiCompatSurrogate::new(cfg))));
+        {
+            let mut sur = OpenAiCompatSurrogate::new(cfg);
+            if let Some(v) = &live_vocab { sur = sur.with_vocab_block(v.clone()); }
+            providers.push(("groq".into(), Arc::new(sur)));
+        }
     }
     if let Some(key) = env_nonempty("GEMINI_API_KEY") {
         let mut cfg = OpenAiCompatConfig::gemini_default(key);
@@ -490,7 +504,11 @@ async fn build_context(pob_path: &str) -> Context {
             cfg.model = model;
         }
         tracing::info!(model = %cfg.model, "surrogate provider: gemini");
-        providers.push(("gemini".into(), Arc::new(OpenAiCompatSurrogate::new(cfg))));
+        {
+            let mut sur = OpenAiCompatSurrogate::new(cfg);
+            if let Some(v) = &live_vocab { sur = sur.with_vocab_block(v.clone()); }
+            providers.push(("gemini".into(), Arc::new(sur)));
+        }
     }
     let (surrogate, surrogate_active): (Arc<dyn SurrogateProvider>, bool) =
         if providers.is_empty() {
@@ -601,9 +619,6 @@ async fn build_context(pob_path: &str) -> Context {
         None => Arc::new(NoopTier3),
         }
     };
-    // Gem database from the vendored Gems.lua — powers real gem swaps
-    // (gemId/skillId rewrite) and ground-truth damage_type cell labels.
-    let gem_db = Arc::new(mossraven_pob::GemDb::load(std::path::Path::new(pob_path)));
     let engine = SearchEngine::new(archive.clone(), surrogate, tier3, gem_db);
 
     // Stamp every archive entry with the live PoB2 version (SPEC §9:
@@ -989,6 +1004,9 @@ impl ControlSurface for ServiceControlSurface {
                 // the LLM to re-encode it (a Claude-generated import code would
                 // be nonsense).
                 "pob_import_code": mossraven_archive::encode_pob_import_code(&entry.pob_xml),
+                // SPEC 1.1.4 all-content viability gate — reported per entry
+                // so Tier-5 prose can quote pass/fail verbatim.
+                "viability": mossraven_core::viability::check(&entry.stats),
             })).collect::<Vec<_>>(),
         }))
     }
@@ -1075,14 +1093,15 @@ fn persist_finalists(
         .join(ts.to_string());
     std::fs::create_dir_all(&base)?;
 
-    // Archive XML by variant_id — the authoritative source for each finalist's
-    // build XML (import codes are derived FROM these).
-    let xml_by_variant: std::collections::HashMap<String, String> = ctx
-        .archive
-        .snapshot()
-        .into_iter()
-        .map(|(_, e)| (e.variant_id, e.pob_xml))
-        .collect();
+    // Archive entries by variant_id — authoritative XML for each finalist
+    // (import codes are derived FROM these) plus the scored stats the
+    // SPEC §1.1.4 viability gate runs against.
+    let entry_by_variant: std::collections::HashMap<String, (String, mossraven_pob::BuildStats)> =
+        ctx.archive
+            .snapshot()
+            .into_iter()
+            .map(|(_, e)| (e.variant_id, (e.pob_xml, e.stats)))
+            .collect();
 
     std::fs::write(
         base.join("finalists.json"),
@@ -1092,9 +1111,9 @@ fn persist_finalists(
     for (i, f) in finalists.iter().enumerate() {
         let stem = format!("{:02}-{}", i + 1, slugify(&f.title, 40));
         std::fs::write(base.join(format!("{stem}.pob-code.txt")), &f.pob_import_code)?;
-        let xml = xml_by_variant
-            .get(&f.variant_id)
-            .cloned()
+        let entry = entry_by_variant.get(&f.variant_id);
+        let xml = entry
+            .map(|(xml, _)| xml.clone())
             .or_else(|| mossraven_archive::decode_pob_import_code(&f.pob_import_code).ok());
         match &xml {
             Some(xml) => std::fs::write(base.join(format!("{stem}.xml")), xml)?,
@@ -1103,7 +1122,11 @@ fn persist_finalists(
                 "finalist XML unavailable (not in archive, import code undecodable)"
             ),
         }
-        std::fs::write(base.join(format!("{stem}.md")), finalist_markdown(f))?;
+        let viability = entry.map(|(_, stats)| mossraven_core::viability::check(stats));
+        std::fs::write(
+            base.join(format!("{stem}.md")),
+            finalist_markdown(f, viability.as_ref()),
+        )?;
     }
     tracing::info!(dir = %base.display(), count = finalists.len(), "finalists persisted");
     Ok(base)
@@ -1131,7 +1154,10 @@ fn slugify(s: &str, max: usize) -> String {
 }
 
 /// Render one finalist as a standalone markdown build guide (SPEC §1.1).
-fn finalist_markdown(f: &mossraven_dreamer::Finalist) -> String {
+fn finalist_markdown(
+    f: &mossraven_dreamer::Finalist,
+    viability: Option<&mossraven_core::viability::ViabilityReport>,
+) -> String {
     let mut md = String::new();
     md.push_str(&format!("# {}\n\n> {}\n\n", f.title, f.one_liner));
     if !f.tags.is_empty() {
@@ -1147,6 +1173,22 @@ fn finalist_markdown(f: &mossraven_dreamer::Finalist) -> String {
             md.push_str(&format!("| {} | {} |\n", ks.label, ks.value));
         }
         md.push('\n');
+    }
+    // SPEC §1.1.4 — never silently present a build as endgame-ready.
+    match viability {
+        Some(v) if v.pass => {
+            md.push_str("## Viability (SPEC §1.1.4)\n\n**PASS** — meets all all-content floors (DPS ≥ 300k, EHP ≥ 5k, res capped, chaos ≥ −30).\n\n");
+        }
+        Some(v) => {
+            md.push_str("## Viability (SPEC §1.1.4)\n\n**FAIL** — not yet all-content ready:\n\n");
+            for fail in &v.failures {
+                md.push_str(&format!("- {fail}\n"));
+            }
+            md.push('\n');
+        }
+        None => {
+            md.push_str("## Viability (SPEC §1.1.4)\n\n*Not evaluated — variant stats unavailable (entry no longer in archive).*\n\n");
+        }
     }
     md.push_str(&format!("## Why it works\n\n{}\n\n", f.why_it_works));
     match &f.guide {

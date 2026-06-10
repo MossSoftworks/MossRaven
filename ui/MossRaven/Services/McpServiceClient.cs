@@ -47,6 +47,11 @@ public sealed class McpServiceClient : IDisposable
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            // The service writes UTF-8 tracing to stderr (em-dashes in log
+            // lines). Without this, .NET decodes with the OEM codepage and
+            // the UI log shows mojibake ("â€”").
+            StandardErrorEncoding = System.Text.Encoding.UTF8,
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
         };
         _proc = Process.Start(psi) ?? throw new InvalidOperationException("Process.Start returned null");
 
