@@ -125,12 +125,22 @@
                             <Button x:Name="HistoryButton"
                                     Content="History"
                                     Padding="10,5"
+                                    Margin="0,0,6,0"
                                     Background="Transparent"
                                     Foreground="{DynamicResource TextBrush}"
                                     BorderBrush="{DynamicResource DimmerBrush}"
                                     BorderThickness="1"
                                     ToolTip="Past concepts"
                                     Click="HistoryButton_Click"/>
+                            <Button x:Name="ModelSettingsButton"
+                                    Content="Models"
+                                    Padding="10,5"
+                                    Background="Transparent"
+                                    Foreground="{DynamicResource TextBrush}"
+                                    BorderBrush="{DynamicResource DimmerBrush}"
+                                    BorderThickness="1"
+                                    ToolTip="Choose which LLM drives each tier; add/remove provider API keys"
+                                    Click="ModelSettingsButton_Click"/>
                         </StackPanel>
                         <Border CornerRadius="6"
                                 Background="{DynamicResource BgBrush}"

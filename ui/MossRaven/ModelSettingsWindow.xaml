@@ -1,0 +1,81 @@
+<Window x:Class="MossRaven.ModelSettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Model Settings"
+        Width="760" Height="560"
+        MinWidth="600" MinHeight="420"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource BgBrush}">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,8">
+            <TextBlock Text="LLM Providers"
+                       FontSize="16" FontWeight="SemiBold"
+                       Foreground="{DynamicResource TextBrush}"/>
+            <TextBlock Foreground="{DynamicResource DimBrush}" FontSize="11" TextWrapping="Wrap"
+                       Text="Built-ins (cerebras / groq / gemini) join the Tier-2 mutation failover chain when checked. Any row — including custom endpoints like local Ollama — can drive Tier 1/5 (hypothesis + guides) via the selector below. Keys are stored locally in settings.json and injected into the engine on (re)connect."/>
+        </StackPanel>
+
+        <!-- Provider rows -->
+        <Border Grid.Row="1" CornerRadius="6"
+                BorderBrush="{DynamicResource DimmerBrush}" BorderThickness="1">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="8,6">
+                <StackPanel x:Name="ProviderPanel"/>
+            </ScrollViewer>
+        </Border>
+
+        <!-- Tier-1/5 selection + Anthropic -->
+        <Border Grid.Row="2" CornerRadius="6" Margin="0,10,0,0" Padding="10,8"
+                BorderBrush="{DynamicResource DimmerBrush}" BorderThickness="1">
+            <StackPanel>
+                <DockPanel LastChildFill="False">
+                    <TextBlock Text="Tier 1/5 (hypothesis + guides):"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextBrush}"
+                               FontWeight="SemiBold" Margin="0,0,8,0"/>
+                    <ComboBox x:Name="Tier1Combo" Width="260" VerticalAlignment="Center"/>
+                </DockPanel>
+                <DockPanel x:Name="AnthropicRow" LastChildFill="False" Margin="0,8,0,0">
+                    <TextBlock Text="Anthropic key:" VerticalAlignment="Center"
+                               Foreground="{DynamicResource DimBrush}" Margin="0,0,6,0"/>
+                    <TextBox x:Name="AnthropicKeyBox" Width="300" VerticalAlignment="Center"
+                             Background="Transparent" Foreground="{DynamicResource TextBrush}"
+                             BorderBrush="{DynamicResource DimmerBrush}"/>
+                    <TextBlock Text="model:" VerticalAlignment="Center" Margin="10,0,6,0"
+                               Foreground="{DynamicResource DimBrush}"/>
+                    <TextBox x:Name="AnthropicModelBox" Width="180" VerticalAlignment="Center"
+                             Background="Transparent" Foreground="{DynamicResource TextBrush}"
+                             BorderBrush="{DynamicResource DimmerBrush}"/>
+                </DockPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Actions -->
+        <DockPanel Grid.Row="3" Margin="0,10,0,0" LastChildFill="False">
+            <Button Content="Add provider" DockPanel.Dock="Left"
+                    Padding="12,5" Background="Transparent"
+                    Foreground="{DynamicResource TextBrush}"
+                    BorderBrush="{DynamicResource DimmerBrush}" BorderThickness="1"
+                    Click="AddProvider_Click"/>
+            <TextBlock x:Name="StatusText" DockPanel.Dock="Left" Margin="10,0,0,0"
+                       VerticalAlignment="Center" FontSize="11"
+                       Foreground="{DynamicResource DimBrush}"/>
+            <Button Content="Cancel" DockPanel.Dock="Right"
+                    Padding="12,5" Margin="6,0,0,0" Background="Transparent"
+                    Foreground="{DynamicResource TextBrush}"
+                    BorderBrush="{DynamicResource DimmerBrush}" BorderThickness="1"
+                    Click="Cancel_Click"/>
+            <Button Content="Save &amp; reconnect engine" DockPanel.Dock="Right"
+                    Padding="12,5"
+                    Background="{DynamicResource MossBrush}" Foreground="White"
+                    BorderThickness="0"
+                    Click="Save_Click"/>
+        </DockPanel>
+    </Grid>
+</Window>

@@ -15,7 +15,7 @@ namespace MossRaven;
 
 public partial class MainWindow : Window
 {
-    private readonly McpServiceClient _service;
+    private McpServiceClient _service; // replaced on settings-reconnect
     private Settings _settings;
     private readonly string _debugLogPath;
 
@@ -50,7 +50,10 @@ public partial class MainWindow : Window
         }
         catch { /* best-effort */ }
 
-        _service = new McpServiceClient(LocateServiceExe(), AppendLog);
+        _service = new McpServiceClient(
+            LocateServiceExe(),
+            AppendLog,
+            () => _settings.ToServiceEnvironment());
         Loaded += async (_, _) =>
         {
             ApplyPersistedState();
@@ -844,6 +847,29 @@ public partial class MainWindow : Window
     }
 
     private ConceptHistoryWindow? _historyWin;
+
+    /// <summary>
+    /// Open model settings; on save, restart the engine child so the new
+    /// provider keys / tier assignment apply (env is read at spawn).
+    /// </summary>
+    private async void ModelSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        var win = new ModelSettingsWindow(_settings) { Owner = this, ShowInTaskbar = false };
+        win.ShowDialog();
+        if (!win.Saved) return;
+        AppendLog("[settings] saved — reconnecting engine with new provider environment");
+        try
+        {
+            _service.Dispose();
+        }
+        catch { /* old child may already be gone */ }
+        _service = new McpServiceClient(
+            LocateServiceExe(),
+            AppendLog,
+            () => _settings.ToServiceEnvironment());
+        await ConnectServiceAsync();
+        await RefreshArchiveAsync();
+    }
 
     private void HistoryButton_Click(object sender, RoutedEventArgs e)
     {

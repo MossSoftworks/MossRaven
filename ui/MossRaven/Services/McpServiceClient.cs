@@ -21,14 +21,22 @@ public sealed class McpServiceClient : IDisposable
 {
     private readonly string _exePath;
     private readonly Action<string> _log;
+    /// <summary>Env overrides applied to the spawned service (provider keys,
+    /// tier assignment). Re-read on every StartAsync so a service reconnect
+    /// picks up freshly-saved settings.</summary>
+    private readonly Func<IDictionary<string, string>>? _envProvider;
     private Process? _proc;
     private long _nextId = 1;
     private readonly ConcurrentDictionary<long, TaskCompletionSource<JsonElement>> _pending = new();
 
-    public McpServiceClient(string exePath, Action<string> log)
+    public McpServiceClient(
+        string exePath,
+        Action<string> log,
+        Func<IDictionary<string, string>>? envProvider = null)
     {
         _exePath = exePath;
         _log = log;
+        _envProvider = envProvider;
     }
 
     public async Task StartAsync()
@@ -53,6 +61,16 @@ public sealed class McpServiceClient : IDisposable
             StandardErrorEncoding = System.Text.Encoding.UTF8,
             StandardOutputEncoding = System.Text.Encoding.UTF8,
         };
+        if (_envProvider != null)
+        {
+            foreach (var (k, v) in _envProvider())
+            {
+                // Empty string intentionally BLANKS an inherited var (the
+                // service treats empty as unset) — that's how disabling a
+                // provider in Settings beats a machine-level setx key.
+                psi.Environment[k] = v;
+            }
+        }
         _proc = Process.Start(psi) ?? throw new InvalidOperationException("Process.Start returned null");
 
         _ = Task.Run(ReadStderrLoop);
