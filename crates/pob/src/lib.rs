@@ -25,11 +25,13 @@
 //!   (`ArchiveEntry::data_version`) so they can be invalidated after league
 //!   patches.
 
+pub mod gemdb;
 pub mod headless;
 pub mod parser;
 
 #[cfg(test)]
 mod test_support;
 
+pub use gemdb::{GemDb, GemInfo};
 pub use headless::{BuildStats, PobError, PobHeadless};
 pub use parser::{PobBackend, PobParseError, PobParser, PobQuery};

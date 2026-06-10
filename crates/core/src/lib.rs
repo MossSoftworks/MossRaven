@@ -102,6 +102,10 @@ pub struct SearchEngine {
     pub surrogate: Arc<dyn SurrogateProvider>,
     pub tier3: Arc<dyn Tier3Backend>,
     pub state: Arc<Mutex<SearchState>>,
+    /// PoB gem database (Gems.lua). Powers real gem swaps (gemId/skillId
+    /// rewrite) and ground-truth damage_type cell labels. An empty db keeps
+    /// the cascade running with swap/add ops skipped.
+    pub gem_db: Arc<mossraven_pob::GemDb>,
 }
 
 impl SearchEngine {
@@ -109,12 +113,14 @@ impl SearchEngine {
         archive: Arc<Archive>,
         surrogate: Arc<dyn SurrogateProvider>,
         tier3: Arc<dyn Tier3Backend>,
+        gem_db: Arc<mossraven_pob::GemDb>,
     ) -> Self {
         Self {
             archive,
             surrogate,
             tier3,
             state: Arc::new(Mutex::new(SearchState::default())),
+            gem_db,
         }
     }
 
@@ -212,7 +218,7 @@ impl SearchEngine {
                 let before_len = p.pob_xml.len();
                 let before_hash = simple_hash(&p.pob_xml);
                 if !p.ops.is_empty() {
-                    p.pob_xml = mutate::apply_ops_to_xml(&p.pob_xml, &p.ops);
+                    p.pob_xml = mutate::apply_ops_to_xml(&p.pob_xml, &p.ops, &self.gem_db);
                 }
                 let after_hash = simple_hash(&p.pob_xml);
                 tracing::info!(
@@ -259,7 +265,14 @@ impl SearchEngine {
                         .cell_focus
                         .as_deref()
                         .or(fallback_focus.as_deref());
-                    let coords = coords_from_stats(&stats, hint);
+                    // Ground-truth damage_type: the scored gem of THIS
+                    // variant's (post-mutation) XML, looked up in PoB's own
+                    // gem data. The surrogate's guess is fallback only —
+                    // handoff [2] found it labeling a physical Whirling
+                    // Slash build "lightning/evasion/...".
+                    let damage_truth = mossraven_surrogate::find_main_skill_gem_name(&proposal.pob_xml)
+                        .and_then(|g| self.gem_db.get(&g).and_then(|i| i.damage_type()));
+                    let coords = coords_from_stats(&stats, hint, damage_truth);
                     let entry = ArchiveEntry {
                         variant_id: id.clone(),
                         pob_xml: proposal.pob_xml.clone(),
@@ -294,13 +307,22 @@ pub struct GenerationReport {
     pub cells_filled_or_improved: usize,
 }
 
-/// Map a `BuildStats` + optional cell hint to a [`CellCoords`].
+/// Map a `BuildStats` (+ ground truth + optional hint) to a [`CellCoords`].
 ///
-/// The hint is a `"damage_type/defense_layer/role/scaling_vector"` string
-/// produced by the surrogate (which knows the mutation's intended axis far
-/// better than the stats alone can reveal). Missing axes fall back to
-/// stats-derived heuristics so the entry always lands in *some* cell.
-pub fn coords_from_stats(stats: &BuildStats, hint: Option<&str>) -> CellCoords {
+/// Axis sources, most-trusted first (handoff [2] — "derive CellCoords from
+/// actual BuildStats + build composition, not the surrogate's guess"):
+/// - `damage_type`: `damage_truth` (scored gem's tags from PoB's own data) →
+///   surrogate hint → "unknown". The hint mislabeled a physical Whirling
+///   Slash build as "lightning/evasion" in the validation run.
+/// - `defense_layer`: ALWAYS stats-derived (dominant pool). The hint is not
+///   consulted — stats are authoritative and always present.
+/// - `role` / `scaling_vector`: hint → defaults. These describe intent
+///   (clear vs boss, what the mutation scales) that stats can't reveal.
+pub fn coords_from_stats(
+    stats: &BuildStats,
+    hint: Option<&str>,
+    damage_truth: Option<&str>,
+) -> CellCoords {
     let parts: Vec<&str> = hint.unwrap_or("").split('/').collect();
     let get = |i: usize| {
         parts
@@ -310,8 +332,11 @@ pub fn coords_from_stats(stats: &BuildStats, hint: Option<&str>) -> CellCoords {
             .map(String::from)
     };
 
-    let damage_type = get(0).unwrap_or_else(|| "unknown".to_string());
-    let defense_layer = get(1).unwrap_or_else(|| {
+    let damage_type = damage_truth
+        .map(String::from)
+        .or_else(|| get(0))
+        .unwrap_or_else(|| "unknown".to_string());
+    let defense_layer = {
         // Dominant defense pool. Life > 0 fallback so the ratio is finite.
         let life = stats.life.max(1.0);
         if stats.energy_shield > life * 1.0 {
@@ -324,7 +349,7 @@ pub fn coords_from_stats(stats: &BuildStats, hint: Option<&str>) -> CellCoords {
             "hybrid"
         }
         .to_string()
-    });
+    };
     let role = get(2).unwrap_or_else(|| "boss".to_string());
     let scaling_vector = get(3).unwrap_or_else(|| "unknown".to_string());
 

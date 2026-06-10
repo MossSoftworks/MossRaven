@@ -531,7 +531,10 @@ async fn build_context(pob_path: &str) -> Context {
         None => Arc::new(NoopTier3),
         }
     };
-    let engine = SearchEngine::new(archive.clone(), surrogate, tier3);
+    // Gem database from the vendored Gems.lua — powers real gem swaps
+    // (gemId/skillId rewrite) and ground-truth damage_type cell labels.
+    let gem_db = Arc::new(mossraven_pob::GemDb::load(std::path::Path::new(pob_path)));
+    let engine = SearchEngine::new(archive.clone(), surrogate, tier3, gem_db);
 
     // Stamp every archive entry with the live PoB2 version (SPEC §9:
     // versioning — entries silently rot across league patches otherwise).

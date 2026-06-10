@@ -85,6 +85,13 @@ fn main_socket_group_range(xml: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Public alias of [`main_socket_group_range`] — byte span `[start, end)` of
+/// the scored socket group. The mutation applier in `mossraven-core` uses it
+/// to constrain add/remove-gem ops to the group PoB actually scores.
+pub fn main_socket_group_span(xml: &str) -> Option<(usize, usize)> {
+    main_socket_group_range(xml)
+}
+
 /// Name of the scored active skill gem — `mainSocketGroup`'s group, gem
 /// number `mainActiveSkill` (1-based, default 1) within it. This is the gem
 /// whose `level=` actually moves PoB's reported DPS.
@@ -101,6 +108,26 @@ pub fn find_main_skill_gem_name(xml: &str) -> Option<String> {
         let endq = abs + group[abs..].find('"')?;
         seen += 1;
         if seen == gem_idx {
+            return Some(group[abs..endq].to_string());
+        }
+        pos = endq;
+    }
+    None
+}
+
+/// Name of the Nth gem (1-based) in the scored socket group. N=1 is the
+/// active skill itself; N>=2 are its supports. Used by the MockSurrogate to
+/// pick a real support to remove without knowing the seed's contents.
+pub fn nth_gem_in_main_group(xml: &str, n: usize) -> Option<String> {
+    let (start, end) = main_socket_group_range(xml)?;
+    let group = &xml[start..end];
+    let mut seen = 0;
+    let mut pos = 0;
+    while let Some(rel) = group[pos..].find("nameSpec=\"") {
+        let abs = pos + rel + "nameSpec=\"".len();
+        let endq = abs + group[abs..].find('"')?;
+        seen += 1;
+        if seen == n {
             return Some(group[abs..endq].to_string());
         }
         pos = endq;
@@ -158,8 +185,17 @@ pub enum MutationOp {
     SetGemLevel { gem: String, level: u32 },
     /// Set the `quality` attribute on the first `<Gem>` whose `nameSpec` matches.
     SetGemQuality { gem: String, quality: u32 },
-    /// Replace the first `nameSpec="OLD"` with `nameSpec="NEW"` — swaps the gem.
+    /// Swap a gem for another. The applier resolves `new` through the PoB
+    /// gem database and rewrites `gemId`/`skillId`/`variantId`/`nameSpec`
+    /// together, so PoB scores the NEW skill (rewriting only the display
+    /// name was the documented v1 no-op).
     SwapGem { old: String, new: String },
+    /// Remove a gem (usually a support) from the scored socket group.
+    /// PoE2 supports are binary, so dropping one genuinely changes the score.
+    RemoveGem { gem: String },
+    /// Add a support gem to the scored socket group. The applier synthesizes
+    /// the full `<Gem>` element from the PoB gem database.
+    AddSupportGem { gem: String },
     /// Flip which weapon loadout the build's active item set scores under —
     /// PoE2's clear-vs-boss weapon-set swap (SPEC §1.1). Rewrites
     /// `useSecondWeaponSet` on the active `<ItemSet>` so Tier 3 evaluates the
@@ -518,22 +554,26 @@ impl SurrogateProvider for OpenAiCompatSurrogate {
              ACTUALLY APPLY to the PoB XML. Each op is one of:\n\
                {{\"op\":\"set_gem_level\", \"gem\":\"<exact nameSpec>\", \"level\":N}}     // 1..20\n\
                {{\"op\":\"set_gem_quality\", \"gem\":\"<exact nameSpec>\", \"quality\":Q}}  // 0..20\n\
-               {{\"op\":\"swap_gem\", \"old\":\"<exact nameSpec>\", \"new\":\"<other POE2 gem>\"}}\n\
+               {{\"op\":\"swap_gem\", \"old\":\"<exact nameSpec>\", \"new\":\"<POE2 gem name>\"}}  // REAL swap: engine rewrites gemId/skillId from PoB data; the new skill IS scored\n\
+               {{\"op\":\"remove_gem\", \"gem\":\"<support nameSpec in the MAIN group>\"}}  // drop a support (PoE2 supports are binary — real score change)\n\
+               {{\"op\":\"add_support_gem\", \"gem\":\"<POE2 support name>\"}}  // add a support to the MAIN group (engine synthesizes the element)\n\
                {{\"op\":\"set_active_weapon_set\", \"use_second\":true}}  // score the OTHER weapon loadout (PoE2 clear-vs-boss swap)\n\
+             swap_gem / add_support_gem names are validated against PoB's own gem database —\n\
+             an unknown name skips the op, so prefer names from the datamined list above.\n\
              Use set_active_weapon_set (optionally combined with a gem-level op) to probe the\n\
              build's second weapon-set loadout — the clear-vs-boss duality we ultimately ship.\n\
              It only changes the score when the seed has gear in weapon set 2.\n\n\
              ⚠️ POE2 SCORING RULES (read carefully — these are not PoE1):\n\
-             - **Only the ACTIVE skill gem's `level` moves DPS.** This is the FIRST gem in the\n\
-               `<Skill mainActiveSkill=\"1\">` block (the main skill, NOT its supports).\n\
-             - **Support gem level changes are NO-OPS in PoE2.** Supports are binary in POE2;\n\
-               their `level=\"N\"` attribute doesn't scale their effect. set_gem_level on a support\n\
-               wastes a variant slot.\n\
-             - **Quality changes barely move DPS** for most gems. Don't lead with quality.\n\
-             - **swap_gem is v1-broken** — it rewrites only the display label, not the scored skill.\n\n\
-             To explore distinct DPS values, each variant MUST set the main skill gem to a\n\
-             DIFFERENT level. Example: m1→level 4, m2→level 8, m3→level 12, m4→level 16, m5→level 20.\n\
-             Variants targeting the SAME gem at the SAME level produce identical scores → wasted.\n\n\
+             - **Only the MAIN SCORED SKILL group moves DPS** — the group under the\n\
+               `<!-- *** MAIN SCORED SKILL *** -->` marker in the XML above. Mutations to other\n\
+               groups apply but don't change the score.\n\
+             - **Support gem LEVEL changes are NO-OPS in PoE2** (supports are binary). To vary a\n\
+               support's contribution use remove_gem / add_support_gem / swap_gem instead.\n\
+             - **Quality changes barely move DPS** for most gems. Don't lead with quality.\n\n\
+             To explore distinct builds, VARY THE AXIS per variant: some main-skill levels\n\
+             (4/8/12/16/20), some support adds/removes/swaps in the main group, at most one\n\
+             main-skill swap_gem to a thematically-adjacent skill. Variants with identical ops\n\
+             produce identical scores → wasted.\n\n\
              The `gem` / `old` / `new` strings MUST match a `nameSpec` attribute on a `<Gem>` element\n\
              in the PoB XML excerpt above — copy them VERBATIM, do not invent new gem names.\n\n\
              Return JSON of shape:\n\
@@ -664,21 +704,54 @@ impl SurrogateProvider for MockSurrogate {
         let main_skill_gem = find_main_skill_gem_name(seed_pob_xml).unwrap_or_else(|| "*".to_string());
         Ok((0..count)
             .map(|i| {
-                // Pick a level from the explore set [4, 8, 12, 16, 20] so each
-                // variant produces a distinct DPS. The cycle wraps if count > 5.
+                // Variant axes (deterministic, cycling):
+                //   i%7 == 5 → REAL gem swap of the scored skill (exercises the
+                //              GemDb gemId/skillId rewrite path; Spark is in
+                //              every PoE2 data set and is lightning — also
+                //              exercises ground-truth damage_type labeling)
+                //   i%7 == 6 → remove a support from the scored group
+                //   else     → main-skill level from the explore set
                 let levels = [4u32, 8, 12, 16, 20];
-                let level = levels[i % levels.len()];
+                let (ops, desc): (Vec<MutationOp>, String) = match i % 7 {
+                    5 => (
+                        vec![MutationOp::SwapGem {
+                            old: main_skill_gem.clone(),
+                            new: "Spark".to_string(),
+                        }],
+                        format!("mock swap — replace {main_skill_gem} with Spark (lightning)"),
+                    ),
+                    6 => match nth_gem_in_main_group(seed_pob_xml, 2) {
+                        Some(support) => (
+                            vec![MutationOp::RemoveGem {
+                                gem: support.clone(),
+                            }],
+                            format!("mock remove — drop support {support} from the scored group"),
+                        ),
+                        None => (
+                            vec![MutationOp::SetGemQuality {
+                                gem: main_skill_gem.clone(),
+                                quality: 20,
+                            }],
+                            "mock fallback — no support to remove; quality the main skill".to_string(),
+                        ),
+                    },
+                    _ => {
+                        let level = levels[i % levels.len()];
+                        (
+                            vec![MutationOp::SetGemLevel {
+                                gem: main_skill_gem.clone(),
+                                level,
+                            }],
+                            format!("mock mutation #{i} — set main skill {main_skill_gem} to level {level}"),
+                        )
+                    }
+                };
                 MutationProposal {
                     variant_id: format!("mock-{i}"),
                     pob_xml: seed_pob_xml.to_string(),
-                    origin_hypothesis: Some(format!(
-                        "mock mutation #{i} — set main skill {main_skill_gem} to level {level}"
-                    )),
+                    origin_hypothesis: Some(desc),
                     cell_focus: Some(cells[i % cells.len()].to_string()),
-                    ops: vec![MutationOp::SetGemLevel {
-                        gem: main_skill_gem.clone(),
-                        level,
-                    }],
+                    ops,
                 }
             })
             .collect())
