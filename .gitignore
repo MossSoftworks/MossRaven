@@ -39,3 +39,7 @@ crates/pob/tests/fixtures/_*.json
 
 # Python bytecode
 __pycache__/
+
+# Repo-local run artifacts (smoke runs write here instead of APPDATA)
+/data/
+scripts/*.log

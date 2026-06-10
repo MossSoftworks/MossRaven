@@ -3,6 +3,9 @@
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 Set-Location $repo
+# Transcript so a headless/Explorer-launched run leaves a readable record
+# even after the console window closes.
+Start-Transcript -Path (Join-Path $repo 'scripts\validate-last-run.log') -Force
 $failed = @()
 
 function Invoke-Native {
@@ -63,7 +66,9 @@ Stage "dist refresh (WPF single-file publish)" {
 Write-Host ""
 if ($failed.Count -eq 0) {
     Write-Host "ALL STAGES GREEN" -ForegroundColor Green
+    Stop-Transcript
 } else {
     Write-Host ("FAILED STAGES: " + ($failed -join ', ')) -ForegroundColor Red
+    Stop-Transcript
     exit 1
 }
