@@ -8,11 +8,16 @@ Set-Location $repo
 Start-Transcript -Path (Join-Path $repo 'scripts\druid-run.log') -Force
 
 function Invoke-Native {
-    # Merge stderr+stdout so cargo/dotnet/exe output lands in the transcript
-    # (external processes write to the console handle directly otherwise and
-    # the transcript only captures the terminating error).
+    # Native tools (cargo, dotnet, our service) write progress to STDERR as a
+    # matter of course. Under $ErrorActionPreference='Stop' a merged stderr
+    # line becomes a terminating error, so drop to 'Continue' for the call and
+    # gate success on the real exit code instead.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & $args[0] $args[1..($args.Count-1)] 2>&1 | ForEach-Object { Write-Host $_ }
-    if ($LASTEXITCODE -ne 0) { throw "exit code $LASTEXITCODE" }
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    if ($code -ne 0) { throw "exit code $code" }
 }
 # Never let an exception kill the window before the transcript flushes.
 trap { Write-Host "DRUID SMOKE ERROR: $_" -ForegroundColor Red; try { Stop-Transcript } catch {}; exit 1 }

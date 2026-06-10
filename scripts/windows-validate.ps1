@@ -9,11 +9,16 @@ Start-Transcript -Path (Join-Path $repo 'scripts\validate-last-run.log') -Force
 $failed = @()
 
 function Invoke-Native {
-    # Merge stderr+stdout so cargo/dotnet/exe output lands in the transcript
-    # (external processes write to the console handle directly otherwise and
-    # the transcript only captures the terminating error).
+    # Native tools (cargo, dotnet, our service) write progress to STDERR as a
+    # matter of course. Under $ErrorActionPreference='Stop' a merged stderr
+    # line becomes a terminating error, so drop to 'Continue' for the call and
+    # gate success on the real exit code instead.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & $args[0] $args[1..($args.Count-1)] 2>&1 | ForEach-Object { Write-Host $_ }
-    if ($LASTEXITCODE -ne 0) { throw "exit code $LASTEXITCODE" }
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    if ($code -ne 0) { throw "exit code $code" }
 }
 
 function Stage($name, [scriptblock]$body) {
@@ -36,11 +41,11 @@ Stage "unit tests (core / surrogate / archive / node-protocol)" {
 }
 
 Stage "pob init smoke (loads Lua VM)" {
-    Invoke-Native cargo test -p mossraven-pob --release --test init_smoke -- --nocapture
+    Invoke-Native cmd /c "cargo test -p mossraven-pob --release --test init_smoke -- --nocapture 2>&1"
 }
 
 Stage "pob parity fixtures (slow; self-skips without fixtures)" {
-    Invoke-Native cargo test -p mossraven-pob --release --test parity -- --ignored --nocapture
+    Invoke-Native cmd /c "cargo test -p mossraven-pob --release --test parity -- --ignored --nocapture 2>&1"
 }
 
 Stage "smoke drive: seed -> run -> frontier -> synthesize (temp archive)" {
