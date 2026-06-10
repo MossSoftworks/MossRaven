@@ -619,7 +619,8 @@ async fn build_context(pob_path: &str) -> Context {
         None => Arc::new(NoopTier3),
         }
     };
-    let engine = SearchEngine::new(archive.clone(), surrogate, tier3, gem_db);
+    let tree_db = Arc::new(mossraven_pob::TreeDb::load(std::path::Path::new(pob_path)));
+    let engine = SearchEngine::new(archive.clone(), surrogate, tier3, gem_db, tree_db);
 
     // Stamp every archive entry with the live PoB2 version (SPEC §9:
     // versioning — entries silently rot across league patches otherwise).

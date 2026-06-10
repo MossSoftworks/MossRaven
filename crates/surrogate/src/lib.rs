@@ -210,6 +210,13 @@ pub enum MutationOp {
     /// Add a support gem to the scored socket group. The applier synthesizes
     /// the full `<Gem>` element from the PoB gem database.
     AddSupportGem { gem: String },
+    /// Allocate a passive-tree NOTABLE by name. The applier paths to it from
+    /// the build's current allocation through the real tree graph (BFS,
+    /// bounded hops, travel nodes paid for) and appends the whole connected
+    /// path to `<Spec nodes>` — never a teleported/disconnected node. This is
+    /// the operator class that attacks the viability DPS gap: gem ops top
+    /// out ~75k on current seeds; the comfort floor is 500k.
+    AllocateNotable { name: String },
     /// Flip which weapon loadout the build's active item set scores under —
     /// PoE2's clear-vs-boss weapon-set swap (SPEC §1.1). Rewrites
     /// `useSecondWeaponSet` on the active `<ItemSet>` so Tier 3 evaluates the

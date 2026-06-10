@@ -28,6 +28,58 @@ use tier3::Tier3Backend;
 pub mod mutate;
 pub mod viability;
 
+/// Per-seed prompt block listing the closest reachable tree notables, so the
+/// LLM proposes `allocate_notable` ops that exist AND connect. Empty when the
+/// tree db or the seed's Spec is unavailable.
+fn reachable_notables_block(seed_xml: &str, tree_db: &mossraven_pob::TreeDb) -> String {
+    if tree_db.is_empty() {
+        return String::new();
+    }
+    let Some(spec_start) = seed_xml.find("<Spec ") else {
+        return String::new();
+    };
+    let Some(end) = seed_xml[spec_start..].find('>') else {
+        return String::new();
+    };
+    let tag = &seed_xml[spec_start..spec_start + end];
+    let attr = |a: &str| -> Option<&str> {
+        let needle = format!("{a}=\"");
+        let i = tag.find(&needle)?;
+        let st = i + needle.len();
+        let e = tag[st..].find('"')?;
+        Some(&tag[st..st + e])
+    };
+    let ver = attr("treeVersion").unwrap_or("0_4");
+    let allocated: std::collections::HashSet<u32> = attr("nodes")
+        .map(|csv| csv.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_default();
+    if allocated.is_empty() {
+        return String::new();
+    }
+    // Weapon-set nodes can't anchor normal-mode paths (see mutate.rs) — list
+    // only notables the applier could actually deliver.
+    let ws = if tag.ends_with('/') {
+        std::collections::HashSet::new()
+    } else {
+        mutate::weapon_set_ids(seed_xml, spec_start + end + 1)
+    };
+    let anchors: std::collections::HashSet<u32> = allocated.difference(&ws).copied().collect();
+    if anchors.is_empty() {
+        return String::new();
+    }
+    let near = tree_db.nearby_notables(ver, &anchors, &ws, 6, 30);
+    if near.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\n[REACHABLE TREE NOTABLES — allocate with {\"op\":\"allocate_notable\",\"name\":\"<exact name>\"}; cost = travel points spent]\n",
+    );
+    for (name, cost, stats) in near {
+        out.push_str(&format!("  {name} (cost {cost}): {stats}\n"));
+    }
+    out
+}
+
 /// Cheap non-cryptographic 64-bit hash for "did this string change" diffs in
 /// trace logs. FNV-1a — no extra deps, distinguishes 1-char changes reliably.
 fn simple_hash(s: &str) -> u64 {
@@ -109,6 +161,9 @@ pub struct SearchEngine {
     /// rewrite) and ground-truth damage_type cell labels. An empty db keeps
     /// the cascade running with swap/add ops skipped.
     pub gem_db: Arc<mossraven_pob::GemDb>,
+    /// Passive-tree database (TreeData/<ver>/tree.json). Powers pathed
+    /// allocate_notable ops + the per-seed reachable-notables prompt block.
+    pub tree_db: Arc<mossraven_pob::TreeDb>,
 }
 
 impl SearchEngine {
@@ -117,6 +172,7 @@ impl SearchEngine {
         surrogate: Arc<dyn SurrogateProvider>,
         tier3: Arc<dyn Tier3Backend>,
         gem_db: Arc<mossraven_pob::GemDb>,
+        tree_db: Arc<mossraven_pob::TreeDb>,
     ) -> Self {
         Self {
             archive,
@@ -124,6 +180,7 @@ impl SearchEngine {
             tier3,
             state: Arc::new(Mutex::new(SearchState::default())),
             gem_db,
+            tree_db,
         }
     }
 
@@ -172,11 +229,12 @@ impl SearchEngine {
 
         // 1. Tier 2 surrogate: propose mutations. Region focus (if any) rides
         // along in the hypothesis text — no trait churn, surrogate-agnostic.
+        let notables_block = reachable_notables_block(&seed_xml, &self.tree_db);
         let concept_for_surrogate = match &region {
             Some(r) => format!(
-                "{concept}\n[FOCUS REGION: {r} — bias mutations toward MAP-Elites cells matching this pattern]"
+                "{concept}\n[FOCUS REGION: {r} — bias mutations toward MAP-Elites cells matching this pattern]{notables_block}"
             ),
-            None => concept.clone(),
+            None => format!("{concept}{notables_block}"),
         };
         let proposals = self
             .surrogate
@@ -235,6 +293,7 @@ impl SearchEngine {
                         | MutationOp::RemoveGem { gem } => Some(gem.as_str()),
                         MutationOp::SwapGem { old, .. } => Some(old.as_str()),
                         MutationOp::AddSupportGem { .. }
+                        | MutationOp::AllocateNotable { .. }
                         | MutationOp::SetActiveWeaponSet { .. } => None,
                     };
                     match target {
@@ -280,7 +339,7 @@ impl SearchEngine {
                 let before_len = p.pob_xml.len();
                 let before_hash = simple_hash(&p.pob_xml);
                 if !p.ops.is_empty() {
-                    p.pob_xml = mutate::apply_ops_to_xml(&p.pob_xml, &p.ops, &self.gem_db);
+                    p.pob_xml = mutate::apply_ops_to_xml(&p.pob_xml, &p.ops, &self.gem_db, &self.tree_db);
                 }
                 let after_hash = simple_hash(&p.pob_xml);
                 tracing::info!(
