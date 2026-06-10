@@ -223,6 +223,14 @@ pub enum MutationOp {
     /// other loadout. Only moves the score when the seed actually has gear in
     /// weapon set 2.
     SetActiveWeaponSet { use_second: bool },
+    /// Equip a UNIQUE item (by exact name, from PoB's own unique database)
+    /// into a named slot of the active item set ("Weapon 1", "Amulet",
+    /// "Ring 1", ...). The applier inserts the full variant-resolved item
+    /// text as a new `<Item>` and rewires the slot's `itemId`. Uniques are
+    /// the legal item operator: fixed mods, no crafting-legality questions —
+    /// and gear is the DPS lever that costs zero passive points, which is
+    /// all an at-budget tree has left.
+    EquipUnique { slot: String, name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -607,6 +615,8 @@ impl SurrogateProvider for OpenAiCompatSurrogate {
                {{\"op\":\"remove_gem\", \"gem\":\"<support nameSpec in the MAIN group>\"}}  // drop a support (PoE2 supports are binary — real score change)\n\
                {{\"op\":\"add_support_gem\", \"gem\":\"<POE2 support name>\"}}  // add a support to the MAIN group (engine synthesizes the element)\n\
                {{\"op\":\"set_active_weapon_set\", \"use_second\":true}}  // score the OTHER weapon loadout (PoE2 clear-vs-boss swap)\n\
+               {{\"op\":\"allocate_notable\", \"name\":\"<exact notable name>\"}}  // pathed tree allocation — ONLY names from the REACHABLE TREE NOTABLES list (costs passive points; over-budget variants are dropped)\n\
+               {{\"op\":\"equip_unique\", \"slot\":\"Weapon 1|Amulet|Ring 1|Ring 2|Helmet|Body Armour|Gloves|Boots|Belt\", \"name\":\"<exact unique name>\"}}  // GEAR is the zero-point DPS lever — prefer names from the EQUIPPABLE UNIQUES list\n\
              swap_gem / add_support_gem names are validated against PoB's own gem database —\n\
              an unknown name skips the op, so prefer names from the datamined list above.\n\
              Use set_active_weapon_set (optionally combined with a gem-level op) to probe the\n\

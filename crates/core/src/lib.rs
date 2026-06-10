@@ -100,6 +100,123 @@ fn format_notables_block(near: &[(String, usize, String)]) -> String {
     out
 }
 
+/// Per-seed equippable-unique candidates: offense uniques for the equipped
+/// weapon kind plus jewellery/gloves. Returns (slot, name) picks for the
+/// engine's forced item exploration AND the prompt block teaching the LLM
+/// the `equip_unique` op. Gear costs ZERO passive points — it's the only
+/// DPS lever left once a tree is at budget.
+fn equippable_uniques(
+    seed_xml: &str,
+    unique_db: &mossraven_pob::UniqueDb,
+) -> (Vec<(String, String)>, String) {
+    if unique_db.is_empty() {
+        return (Vec::new(), String::new());
+    }
+    let mut picks: Vec<(String, String, String)> = Vec::new(); // slot, name, mods
+
+    // Weapon 1: same-kind swaps only (a staff build explores staves).
+    if let Some(base) = equipped_base(seed_xml, "Weapon 1") {
+        if let Some(kind) = mossraven_pob::UniqueDb::kind_of_base(&base) {
+            for u in unique_db.of_kind(kind).iter().filter(|u| u.is_offense()) {
+                picks.push(("Weapon 1".into(), u.name.clone(), u.mods_joined.clone()));
+            }
+        }
+    }
+    for (slot, kind) in [
+        ("Amulet", "amulet"),
+        ("Ring 1", "ring"),
+        ("Gloves", "gloves"),
+    ] {
+        for u in unique_db.of_kind(kind).iter().filter(|u| u.is_offense()) {
+            picks.push((slot.into(), u.name.clone(), u.mods_joined.clone()));
+        }
+    }
+    picks.truncate(40);
+    if picks.is_empty() {
+        return (Vec::new(), String::new());
+    }
+
+    let mut block = String::from(
+        "\n[EQUIPPABLE UNIQUES — equip with {\"op\":\"equip_unique\",\"slot\":\"<slot>\",\"name\":\"<exact name>\"}; gear costs NO passive points]\n",
+    );
+    for (slot, name, mods) in picks.iter().take(24) {
+        let m: String = mods.chars().take(90).collect();
+        block.push_str(&format!("  {slot}: {name} — {m}\n"));
+    }
+    (
+        picks.into_iter().map(|(s, n, _)| (s, n)).collect(),
+        block,
+    )
+}
+
+/// Base-type line of the item equipped in `slot` of the ACTIVE item set.
+/// (Item text: "Rarity: X" / name / base — base is line 3 for RARE/UNIQUE,
+/// line 2 for NORMAL/MAGIC; we probe both through `kind_of_base`.)
+fn equipped_base(xml: &str, slot: &str) -> Option<String> {
+    let items_start = xml.find("<Items ")?;
+    let items_tag_end = items_start + xml[items_start..].find('>')?;
+    let items_tag = &xml[items_start..items_tag_end];
+    let attr = |tag: &str, a: &str| -> Option<String> {
+        let needle = format!("{a}=\"");
+        let i = tag.find(&needle)?;
+        let st = i + needle.len();
+        let e = tag[st..].find('"')?;
+        Some(tag[st..st + e].to_string())
+    };
+    let active_set = attr(items_tag, "activeItemSet").unwrap_or_else(|| "1".into());
+
+    // Find the active ItemSet span, then the slot tag inside it.
+    let set_needle = format!("id=\"{active_set}\"");
+    let mut search = items_start;
+    let items_close = xml.find("</Items>").unwrap_or(xml.len());
+    let mut item_id = None;
+    while let Some(rel) = xml[search..items_close].find("<ItemSet ") {
+        let tag_start = search + rel;
+        let tag_end = tag_start + xml[tag_start..].find('>')?;
+        if xml[tag_start..tag_end].contains(&set_needle) {
+            let set_end = tag_start
+                + xml[tag_start..]
+                    .find("</ItemSet>")
+                    .unwrap_or(items_close - tag_start);
+            let slot_needle = format!("name=\"{slot}\"");
+            let mut s2 = tag_start;
+            while let Some(r2) = xml[s2..set_end].find("<Slot ") {
+                let t2 = s2 + r2;
+                let e2 = t2 + xml[t2..].find('>')?;
+                if xml[t2..e2].contains(&slot_needle) {
+                    item_id = attr(&xml[t2..e2], "itemId");
+                    break;
+                }
+                s2 = e2;
+            }
+            break;
+        }
+        search = tag_end;
+    }
+    let item_id = item_id?;
+    if item_id == "0" {
+        return None;
+    }
+    let item_open = format!("<Item id=\"{item_id}\">");
+    let i = xml.find(&item_open)?;
+    let body_start = i + item_open.len();
+    let body_end = body_start + xml[body_start..].find("</Item>")?;
+    let lines: Vec<&str> = xml[body_start..body_end]
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    // Probe lines 2 then 1 (0-indexed) — covers RARE/UNIQUE then NORMAL/MAGIC.
+    for idx in [2usize, 1] {
+        if let Some(l) = lines.get(idx) {
+            if mossraven_pob::UniqueDb::kind_of_base(l).is_some() {
+                return Some((*l).to_string());
+            }
+        }
+    }
+    lines.get(2).or_else(|| lines.get(1)).map(|l| (*l).to_string())
+}
+
 /// Cheap non-cryptographic 64-bit hash for "did this string change" diffs in
 /// trace logs. FNV-1a — no extra deps, distinguishes 1-char changes reliably.
 fn simple_hash(s: &str) -> u64 {
@@ -184,8 +301,11 @@ pub struct SearchEngine {
     /// Passive-tree database (TreeData/<ver>/tree.json). Powers pathed
     /// allocate_notable ops + the per-seed reachable-notables prompt block.
     pub tree_db: Arc<mossraven_pob::TreeDb>,
-    /// Generation counter — rotates the engine-forced tree-exploration picks
-    /// so successive generations probe different notables.
+    /// Unique-item database (Data/Uniques/*.lua). Powers equip_unique ops +
+    /// the per-seed equippable-uniques prompt block.
+    pub unique_db: Arc<mossraven_pob::UniqueDb>,
+    /// Generation counter — rotates the engine-forced exploration picks
+    /// (tree notables + gear) so successive generations probe new ground.
     gen_counter: std::sync::atomic::AtomicUsize,
 }
 
@@ -196,6 +316,7 @@ impl SearchEngine {
         tier3: Arc<dyn Tier3Backend>,
         gem_db: Arc<mossraven_pob::GemDb>,
         tree_db: Arc<mossraven_pob::TreeDb>,
+        unique_db: Arc<mossraven_pob::UniqueDb>,
     ) -> Self {
         Self {
             archive,
@@ -204,6 +325,7 @@ impl SearchEngine {
             state: Arc::new(Mutex::new(SearchState::default())),
             gem_db,
             tree_db,
+            unique_db,
             gen_counter: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -301,11 +423,12 @@ impl SearchEngine {
         // along in the hypothesis text — no trait churn, surrogate-agnostic.
         let nearby = reachable_notables(&seed_xml, &self.tree_db);
         let notables_block = format_notables_block(&nearby);
+        let (unique_picks, uniques_block) = equippable_uniques(&seed_xml, &self.unique_db);
         let concept_for_surrogate = match &region {
             Some(r) => format!(
-                "{concept}\n[FOCUS REGION: {r} — bias mutations toward MAP-Elites cells matching this pattern]{notables_block}"
+                "{concept}\n[FOCUS REGION: {r} — bias mutations toward MAP-Elites cells matching this pattern]{notables_block}{uniques_block}"
             ),
-            None => format!("{concept}{notables_block}"),
+            None => format!("{concept}{notables_block}{uniques_block}"),
         };
         let proposals = self
             .surrogate
@@ -365,6 +488,7 @@ impl SearchEngine {
                         MutationOp::SwapGem { old, .. } => Some(old.as_str()),
                         MutationOp::AddSupportGem { .. }
                         | MutationOp::AllocateNotable { .. }
+                        | MutationOp::EquipUnique { .. }
                         | MutationOp::SetActiveWeaponSet { .. } => None,
                     };
                     match target {
@@ -407,27 +531,36 @@ impl SearchEngine {
         // each get one AllocateNotable appended, cycling through the seed's
         // reachable notables across generations so successive elites compound
         // tree growth. MAP-Elites keeps whatever scores.
-        const TREE_EXPLORE_VARIANTS: usize = 3;
-        // Offense notables first (cost order within each class): the DPS
-        // floor is the binding viability constraint, and the close ring
-        // around caster starts is mostly defense/utility.
-        // Budget gate: only force paths whose worst-case cost fits the
-        // parent's spare points (path cost ≤ listed hop count; free-allocate
-        // nodes can only make it cheaper). A parent at budget skips tree
-        // forcing entirely — items are the explorer there.
-        let explore_order: Vec<&(String, usize, String)> = nearby
+        const FORCED_EXPLORE_VARIANTS: usize = 3;
+        // Tree picks: offense notables first (cost order within each class),
+        // budget-gated — only paths whose worst-case cost fits the parent's
+        // spare points (path cost ≤ hop count; free-allocate nodes only make
+        // it cheaper). An at-budget parent contributes NO tree picks.
+        let tree_picks: Vec<&(String, usize, String)> = nearby
             .iter()
             .filter(|n| is_offense_notable(&n.2))
             .chain(nearby.iter().filter(|n| !is_offense_notable(&n.2)))
             .filter(|n| parent_spare_points.is_none_or(|spare| n.1 as u32 <= spare))
             .collect();
-        if explore_order.is_empty() && !nearby.is_empty() {
+        // Combined explorer: gear first (zero passive points — the only
+        // lever an at-budget tree has), then affordable notables. The
+        // generation counter walks the whole list across runs.
+        enum Explore {
+            Tree(String),
+            Gear(String, String),
+        }
+        let explorer: Vec<Explore> = unique_picks
+            .iter()
+            .map(|(slot, name)| Explore::Gear(slot.clone(), name.clone()))
+            .chain(tree_picks.iter().map(|n| Explore::Tree(n.0.clone())))
+            .collect();
+        if explorer.is_empty() && (!nearby.is_empty() || !unique_picks.is_empty()) {
             tracing::info!(
                 spare_points = ?parent_spare_points,
-                "tree exploration skipped: no reachable notable fits the parent's spare points"
+                "forced exploration skipped: nothing affordable or equippable"
             );
         }
-        let survivors: Vec<MutationProposal> = if explore_order.is_empty() {
+        let survivors: Vec<MutationProposal> = if explorer.is_empty() {
             survivors
         } else {
             let n = survivors.len();
@@ -435,19 +568,33 @@ impl SearchEngine {
                 .into_iter()
                 .enumerate()
                 .map(|(idx, mut p)| {
-                    if idx + TREE_EXPLORE_VARIANTS >= n {
-                        let slot = idx + TREE_EXPLORE_VARIANTS - n;
-                        let pick = (gen * TREE_EXPLORE_VARIANTS + slot) % explore_order.len();
-                        let (name, cost, _) = explore_order[pick];
-                        tracing::info!(
-                            variant = %p.variant_id,
-                            notable = %name,
-                            cost,
-                            "engine-forced tree exploration: allocate_notable appended"
-                        );
-                        p.ops.push(mossraven_surrogate::MutationOp::AllocateNotable {
-                            name: name.clone(),
-                        });
+                    if idx + FORCED_EXPLORE_VARIANTS >= n {
+                        let slot_i = idx + FORCED_EXPLORE_VARIANTS - n;
+                        let pick = (gen * FORCED_EXPLORE_VARIANTS + slot_i) % explorer.len();
+                        match &explorer[pick] {
+                            Explore::Tree(name) => {
+                                tracing::info!(
+                                    variant = %p.variant_id,
+                                    notable = %name,
+                                    "engine-forced exploration: allocate_notable appended"
+                                );
+                                p.ops.push(mossraven_surrogate::MutationOp::AllocateNotable {
+                                    name: name.clone(),
+                                });
+                            }
+                            Explore::Gear(slot, name) => {
+                                tracing::info!(
+                                    variant = %p.variant_id,
+                                    slot = %slot,
+                                    unique = %name,
+                                    "engine-forced exploration: equip_unique appended"
+                                );
+                                p.ops.push(mossraven_surrogate::MutationOp::EquipUnique {
+                                    slot: slot.clone(),
+                                    name: name.clone(),
+                                });
+                            }
+                        }
                     }
                     p
                 })
@@ -465,7 +612,13 @@ impl SearchEngine {
                 let before_len = p.pob_xml.len();
                 let before_hash = simple_hash(&p.pob_xml);
                 if !p.ops.is_empty() {
-                    p.pob_xml = mutate::apply_ops_to_xml(&p.pob_xml, &p.ops, &self.gem_db, &self.tree_db);
+                    p.pob_xml = mutate::apply_ops_to_xml(
+                        &p.pob_xml,
+                        &p.ops,
+                        &self.gem_db,
+                        &self.tree_db,
+                        &self.unique_db,
+                    );
                 }
                 let after_hash = simple_hash(&p.pob_xml);
                 tracing::info!(

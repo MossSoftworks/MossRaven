@@ -29,11 +29,13 @@ pub mod gemdb;
 pub mod headless;
 pub mod parser;
 pub mod treedb;
+pub mod uniquedb;
 
 #[cfg(test)]
 mod test_support;
 
 pub use gemdb::{GemDb, GemInfo};
 pub use treedb::TreeDb;
+pub use uniquedb::{UniqueDb, UniqueItem};
 pub use headless::{BuildStats, PobError, PobHeadless};
 pub use parser::{PobBackend, PobParseError, PobParser, PobQuery};

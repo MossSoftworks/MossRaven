@@ -11,7 +11,7 @@
 //!   cargo test -p mossraven-core --test weapon_swap -- --ignored --nocapture
 
 use mossraven_core::mutate::apply_ops_to_xml;
-use mossraven_pob::{GemDb, PobHeadless, TreeDb};
+use mossraven_pob::{GemDb, PobHeadless, TreeDb, UniqueDb};
 use mossraven_surrogate::MutationOp;
 use std::path::{Path, PathBuf};
 
@@ -53,6 +53,7 @@ fn weapon_set_swap_changes_the_scored_loadout() {
         &[MutationOp::SetActiveWeaponSet { use_second: true }],
         &gem_db,
         &TreeDb::default(),
+        &UniqueDb::default(),
     );
     assert_ne!(set1, set2, "op must rewrite the XML");
     assert!(

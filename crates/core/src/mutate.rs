@@ -30,7 +30,7 @@
 //! don't break the cascade, the variant just scores identical to the seed and
 //! gets out-competed in MAP-Elites.
 
-use mossraven_pob::{GemDb, TreeDb};
+use mossraven_pob::{GemDb, TreeDb, UniqueDb};
 use mossraven_surrogate::{main_socket_group_span, MutationOp};
 
 /// Apply ops to `seed_xml` in order, returning the mutated XML.
@@ -39,12 +39,16 @@ pub fn apply_ops_to_xml(
     ops: &[MutationOp],
     gem_db: &GemDb,
     tree_db: &TreeDb,
+    unique_db: &UniqueDb,
 ) -> String {
     let mut xml = seed_xml.to_string();
     for op in ops {
         match op {
             MutationOp::AllocateNotable { name } => {
                 xml = allocate_notable(&xml, name, tree_db);
+            }
+            MutationOp::EquipUnique { slot, name } => {
+                xml = equip_unique(&xml, slot, name, unique_db);
             }
             MutationOp::SetGemLevel { gem, level } => {
                 xml = rewrite_gem_attr(&xml, gem, "level", &level.to_string());
@@ -171,6 +175,111 @@ pub(crate) fn weapon_set_ids(xml: &str, spec_body_start: usize) -> std::collecti
         }
         at = tag_start + tag_end_rel;
     }
+    out
+}
+
+/// Equip a unique item (by exact name, from PoB's unique db) into a named
+/// slot of the ACTIVE item set:
+/// 1. append a new `<Item id="max+1">` with the variant-resolved item text;
+/// 2. rewrite `itemId` on the matching `<Slot name="...">` inside the active
+///    `<ItemSet>` (per `<Items activeItemSet="...">`).
+/// Skips with a WARN on unknown unique / missing Items container / missing
+/// slot — a skipped op scores like the seed and gets out-competed.
+fn equip_unique(xml: &str, slot: &str, name: &str, unique_db: &UniqueDb) -> String {
+    let Some(unique) = unique_db.get(name) else {
+        tracing::warn!(name, "equip_unique: not in PoB unique data; op skipped");
+        return xml.to_string();
+    };
+    let Some(items_start) = xml.find("<Items ") else {
+        tracing::warn!(name, "equip_unique: no <Items> container; op skipped");
+        return xml.to_string();
+    };
+    let Some(items_close) = xml.find("</Items>") else {
+        tracing::warn!(name, "equip_unique: unterminated <Items>; op skipped");
+        return xml.to_string();
+    };
+
+    // New item id = max existing + 1.
+    let mut max_id = 0u32;
+    let mut at = items_start;
+    while let Some(rel) = xml[at..items_close].find("<Item id=\"") {
+        let st = at + rel + "<Item id=\"".len();
+        if let Some(e) = xml[st..].find('"') {
+            if let Ok(id) = xml[st..st + e].parse::<u32>() {
+                max_id = max_id.max(id);
+            }
+            at = st + e;
+        } else {
+            break;
+        }
+    }
+    let new_id = max_id + 1;
+
+    // Active item set: <Items activeItemSet="K"> → <ItemSet ... id="K">.
+    let items_tag_end = items_start + xml[items_start..].find('>').unwrap_or(0);
+    let items_tag = &xml[items_start..items_tag_end];
+    let active_set = attr_value_local(items_tag, "activeItemSet").unwrap_or("1");
+
+    let set_needle_a = format!("id=\"{active_set}\"");
+    let mut set_start = None;
+    let mut search = items_start;
+    while let Some(rel) = xml[search..items_close].find("<ItemSet ") {
+        let tag_start = search + rel;
+        let tag_end = tag_start + xml[tag_start..].find('>').unwrap_or(0);
+        if xml[tag_start..tag_end].contains(&set_needle_a) {
+            set_start = Some(tag_start);
+            break;
+        }
+        search = tag_end;
+    }
+    let Some(set_start) = set_start else {
+        tracing::warn!(name, active_set, "equip_unique: active <ItemSet> not found; op skipped");
+        return xml.to_string();
+    };
+    let set_end = set_start
+        + xml[set_start..]
+            .find("</ItemSet>")
+            .unwrap_or(items_close - set_start);
+
+    // The slot tag inside the active set.
+    let slot_needle = format!("name=\"{slot}\"");
+    let mut slot_tag_start = None;
+    let mut search = set_start;
+    while let Some(rel) = xml[search..set_end].find("<Slot ") {
+        let tag_start = search + rel;
+        let tag_end = tag_start + xml[tag_start..].find('>').unwrap_or(0);
+        if xml[tag_start..tag_end].contains(&slot_needle) {
+            slot_tag_start = Some((tag_start, tag_end));
+            break;
+        }
+        search = tag_end;
+    }
+    let Some((slot_start, slot_end)) = slot_tag_start else {
+        tracing::warn!(name, slot, "equip_unique: slot not in active item set; op skipped");
+        return xml.to_string();
+    };
+
+    // Build the new document: item block before </Items>, slot retargeted.
+    let item_block = format!(
+        "\t\t<Item id=\"{new_id}\">\n{}\n\t\t</Item>\n\t",
+        unique.item_text
+    );
+    let new_slot_tag = set_attr_in_tag(&xml[slot_start..slot_end + 1], "itemId", &new_id.to_string());
+
+    tracing::info!(
+        unique = %unique.name,
+        base = %unique.base,
+        slot,
+        item_id = new_id,
+        "equip_unique: item inserted and slot rewired"
+    );
+
+    let mut out = String::with_capacity(xml.len() + item_block.len() + 16);
+    out.push_str(&xml[..slot_start]);
+    out.push_str(&new_slot_tag);
+    out.push_str(&xml[slot_end + 1..items_close]);
+    out.push_str(&item_block);
+    out.push_str(&xml[items_close..]);
     out
 }
 
@@ -497,7 +606,7 @@ return {
             gem: "Whirling Slash".to_string(),
             level: 15,
         }];
-        let out = apply_ops_to_xml(REAL_GEM_SNIPPET, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(REAL_GEM_SNIPPET, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         // The Whirling Slash gem's level was 20; should now be 15.
         assert!(out.contains(r#"nameSpec="Whirling Slash""#));
         // The substring containing this gem's level should be 15.
@@ -514,7 +623,7 @@ return {
             gem: "*".to_string(),
             quality: 12,
         }];
-        let out = apply_ops_to_xml(REAL_GEM_SNIPPET, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(REAL_GEM_SNIPPET, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         // The FIRST gem (Whirling Slash) should have quality 12.
         let line = out.lines().find(|l| l.contains("Whirling Slash")).unwrap();
         assert!(line.contains(r#"quality="12""#), "got: {line}");
@@ -531,7 +640,7 @@ return {
             old: "Whirling Slash".to_string(),
             new: "Spark".to_string(),
         }];
-        let out = apply_ops_to_xml(REAL_GEM_SNIPPET, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(REAL_GEM_SNIPPET, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         let line = out.lines().find(|l| l.contains(r#"nameSpec="Spark""#)).expect("swapped gem");
         assert!(line.contains(r#"gemId="Metadata/Items/Gems/SkillGemSpark""#), "got: {line}");
         assert!(line.contains(r#"skillId="SparkPlayer""#), "got: {line}");
@@ -547,7 +656,7 @@ return {
             old: "Inspiration".to_string(),
             new: "Frigid Bond".to_string(),
         }];
-        let out = apply_ops_to_xml(REAL_GEM_SNIPPET, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(REAL_GEM_SNIPPET, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         assert!(out.contains(r#"nameSpec="Inspiration""#), "swap must be skipped: {out}");
         assert!(!out.contains("Frigid Bond"), "got: {out}");
     }
@@ -560,7 +669,7 @@ return {
             gem: "Nonexistent Gem".to_string(),
             level: 99,
         }];
-        let out = apply_ops_to_xml(REAL_GEM_SNIPPET, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(REAL_GEM_SNIPPET, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         assert_eq!(out, REAL_GEM_SNIPPET);
     }
 
@@ -580,7 +689,7 @@ return {
                 new: "Magnified Effect".to_string(),
             },
         ];
-        let out = apply_ops_to_xml(REAL_GEM_SNIPPET, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(REAL_GEM_SNIPPET, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         let ws = out.lines().find(|l| l.contains("Whirling Slash")).unwrap();
         assert!(ws.contains(r#"level="7""#), "got: {ws}");
         assert!(ws.contains(r#"quality="5""#), "got: {ws}");
@@ -602,7 +711,7 @@ return {
             gem: "Whirling Slash".to_string(),
             level: 5,
         }];
-        let out = apply_ops_to_xml(xml, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(xml, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         assert!(out.contains(r#"defaultGemLevel="custom""#), "got: {out}");
         assert!(out.contains(r#"defaultGemQuality="custom""#), "got: {out}");
         assert!(out.contains(r#"level="5""#), "got: {out}");
@@ -613,7 +722,7 @@ return {
     #[test]
     fn no_ops_leaves_skills_container_intact() {
         let xml = r#"<Skills defaultGemLevel="normalMaximum" defaultGemQuality="0"><Gem nameSpec="X" level="1"/></Skills>"#;
-        let out = apply_ops_to_xml(xml, &[], &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(xml, &[], &db(), &TreeDb::default(), &UniqueDb::default());
         assert_eq!(out, xml);
     }
 
@@ -648,7 +757,7 @@ return {
         let ops = vec![MutationOp::RemoveGem {
             gem: "Swift Affliction II".to_string(),
         }];
-        let out = apply_ops_to_xml(GROUPED_SNIPPET, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(GROUPED_SNIPPET, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         assert!(!out.contains("Swift Affliction II"), "support removed: {out}");
         assert!(out.contains(r#"nameSpec="Tornado""#), "main skill intact");
         assert!(out.contains(r#"nameSpec="Frost Bomb""#), "other group intact");
@@ -661,7 +770,7 @@ return {
         let ops = vec![MutationOp::RemoveGem {
             gem: "Frost Bomb".to_string(),
         }];
-        let out = apply_ops_to_xml(GROUPED_SNIPPET, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(GROUPED_SNIPPET, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         assert!(out.contains(r#"nameSpec="Frost Bomb""#), "got: {out}");
     }
 
@@ -670,7 +779,7 @@ return {
         let ops = vec![MutationOp::AddSupportGem {
             gem: "Magnified Effect".to_string(),
         }];
-        let out = apply_ops_to_xml(GROUPED_SNIPPET, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(GROUPED_SNIPPET, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         let added = out
             .lines()
             .find(|l| l.contains(r#"nameSpec="Magnified Effect""#))
@@ -698,7 +807,7 @@ return {
     #[test]
     fn weapon_set_flips_on_active_item_set_only() {
         let ops = vec![MutationOp::SetActiveWeaponSet { use_second: true }];
-        let out = apply_ops_to_xml(ITEM_SETS_SNIPPET, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(ITEM_SETS_SNIPPET, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         // ItemSet id=2 is active — it gets the flag.
         let set2 = out
             .lines()
@@ -717,7 +826,7 @@ return {
     fn weapon_set_falls_back_to_first_item_set() {
         let xml = r#"<ItemSet useSecondWeaponSet="nil" id="7"><Slot/></ItemSet>"#;
         let ops = vec![MutationOp::SetActiveWeaponSet { use_second: true }];
-        let out = apply_ops_to_xml(xml, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(xml, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         assert!(out.contains(r#"useSecondWeaponSet="true""#), "got: {out}");
     }
 
@@ -725,7 +834,7 @@ return {
     fn weapon_set_false_writes_nil() {
         let xml = r#"<Items activeItemSet="1"><ItemSet useSecondWeaponSet="true" id="1"/></Items>"#;
         let ops = vec![MutationOp::SetActiveWeaponSet { use_second: false }];
-        let out = apply_ops_to_xml(xml, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(xml, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         assert!(out.contains(r#"useSecondWeaponSet="nil""#), "got: {out}");
     }
 
@@ -733,7 +842,7 @@ return {
     fn weapon_set_no_item_set_is_noop() {
         let xml = r#"<Skills><Gem nameSpec="X" level="1"/></Skills>"#;
         let ops = vec![MutationOp::SetActiveWeaponSet { use_second: true }];
-        let out = apply_ops_to_xml(xml, &ops, &db(), &TreeDb::default());
+        let out = apply_ops_to_xml(xml, &ops, &db(), &TreeDb::default(), &UniqueDb::default());
         // No <ItemSet> anywhere — XML unchanged except the Skills-defaults
         // flip that any non-empty ops list triggers.
         assert!(!out.contains("useSecondWeaponSet"), "got: {out}");

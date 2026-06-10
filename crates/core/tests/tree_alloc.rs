@@ -16,7 +16,7 @@
 //!   cargo test -p mossraven-core --test tree_alloc -- --ignored --nocapture
 
 use mossraven_core::mutate::apply_ops_to_xml;
-use mossraven_pob::{GemDb, PobHeadless, TreeDb};
+use mossraven_pob::{GemDb, PobHeadless, TreeDb, UniqueDb};
 use mossraven_surrogate::MutationOp;
 use std::path::{Path, PathBuf};
 
@@ -53,6 +53,7 @@ fn allocated_notable_changes_pob_scored_stats() {
         }],
         &gem_db,
         &tree_db,
+        &UniqueDb::default(),
     );
     assert_ne!(seed, mutated, "op must rewrite Spec nodes");
     // The path was appended — node count strictly grew.
@@ -157,6 +158,7 @@ fn unreachable_notable_is_a_noop() {
         }],
         &GemDb::default(),
         &tree_db,
+        &UniqueDb::default(),
     );
     // Only the Skills-defaults flip (any non-empty op list triggers it) may
     // differ; the Spec nodes must be untouched.
