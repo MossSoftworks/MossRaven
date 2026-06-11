@@ -31,16 +31,16 @@ public static class PobBootstrap
     /// running instance (SetMode BUILD). This is what makes clicks load into
     /// the LIVE window and lets the tree light up during search. We patch the
     /// user's local copy only — never redistributed.</summary>
-    private const string LiveLinkMarker = "-- MossRaven live-link";
+    private const string LiveLinkMarker = "-- MossRaven live-link v2";
     private const string LiveLinkLua = @"
--- MossRaven live-link (appended by MossRaven; safe to delete)
+-- MossRaven live-link v2 (appended by MossRaven; safe to delete)
 do
     local mrOrigOnFrame = main.OnFrame
     local mrTick, mrLastSig = 0, nil
     function main:OnFrame(...)
         mrOrigOnFrame(self, ...)
         mrTick = mrTick + 1
-        if mrTick >= 30 then
+        if mrTick >= 5 then
             mrTick = 0
             local sf = io.open(""mossraven-live.sig"", ""rb"")
             if sf then
@@ -76,11 +76,13 @@ end
                 return;
             }
             var text = File.ReadAllText(mainLua);
-            if (!text.Contains(LiveLinkMarker))
-            {
-                File.AppendAllText(mainLua, "\n" + LiveLinkLua);
-                log("[pob-live] live-link injected into local PoB copy (click + search now load into the live window)");
-            }
+            if (text.Contains(LiveLinkMarker)) return; // current version present
+            // Strip any older injected block (always appended at EOF).
+            var oldIdx = text.IndexOf("-- MossRaven live-link", StringComparison.Ordinal);
+            if (oldIdx >= 0)
+                text = text.Substring(0, oldIdx).TrimEnd() + "\n";
+            File.WriteAllText(mainLua, text + "\n" + LiveLinkLua);
+            log("[pob-live] live-link v2 injected (~80ms poll) into local PoB copy");
         }
         catch (Exception ex)
         {

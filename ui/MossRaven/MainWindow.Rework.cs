@@ -427,16 +427,29 @@ public partial class MainWindow
     }
 
     // ----- Ops box -----
-    private void RefreshOpsStatus()
+    private long _opsRows, _opsBytes;
+
+    private async void RefreshOpsStatus()
     {
+        // Prefer the ENGINE's view (this UI process has been observed unable
+        // to enumerate the data dir in some launch contexts).
         try
         {
-            // Corpus: newest evals file size → row estimate (~2 KB/row).
+            var json = await _service.OpsStatusAsync();
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("corpus_rows", out var r))
+                _opsRows = r.GetInt64();
+            if (doc.RootElement.TryGetProperty("corpus_bytes", out var b))
+                _opsBytes = b.GetInt64();
+        }
+        catch { /* keep last known; fall through to local estimate */ }
+        try
+        {
             var corpusDir = Path.Combine(DataDir(), "corpus");
-            long bytes = 0;
-            if (Directory.Exists(corpusDir))
+            long bytes = _opsBytes;
+            if (bytes == 0 && Directory.Exists(corpusDir))
                 bytes = new DirectoryInfo(corpusDir).GetFiles("evals-*.jsonl").Sum(f => f.Length);
-            var rows = bytes / 2000;
+            var rows = _opsRows > 0 ? _opsRows : bytes / 2000;
             var churnAlive = _churnProc is { HasExited: false };
             OpsChurnStatus.Text = $"{(churnAlive ? "RUNNING" : "idle")} · ~{rows:N0} rows ({bytes / 1048576.0:N1} MB)";
             OpsChurnButton.Content = churnAlive ? "Stop" : "Start";

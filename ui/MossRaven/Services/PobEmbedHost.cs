@@ -54,6 +54,10 @@ public sealed class PobEmbedHost : HwndHost
                 FileName = _exePath,
                 WorkingDirectory = System.IO.Path.GetDirectoryName(_exePath) ?? ".",
                 UseShellExecute = true,
+                // Hidden from birth: the splash and main window are created
+                // invisible, captured invisibly, and only ever SHOWN inside
+                // our pane — zero pop-ups, zero flicker by construction.
+                WindowStyle = ProcessWindowStyle.Hidden,
             });
             if (_proc == null)
             {
@@ -72,17 +76,17 @@ public sealed class PobEmbedHost : HwndHost
                     // fall through to the title search instead of bailing.
                     _log("[pob-embed] launcher exited early — searching by window title");
                 }
-                var cand = FindMainWindowForPid((uint)_proc.Id);
-                if (cand == IntPtr.Zero && i >= 15)
-                    cand = FindWindowByTitleContains("Path of Building");
-                // Splash filter: PoB shows a small green status window first,
-                // then the REAL window. Only accept windows of app size —
-                // and hide the splash so nothing perceptibly pops out.
+                // Search INCLUDING invisible windows (we launch hidden);
+                // by pid first, then by title (covers child-process spawns).
+                var cand = FindWindowForPid((uint)_proc.Id, includeHidden: true, appSizedOnly: true);
+                if (cand == IntPtr.Zero && i >= 10)
+                    cand = FindWindowByTitle("Path of Building", includeHidden: true, appSizedOnly: true);
+                // Any small window (splash) stays hidden; never shown at all.
+                var splash = FindWindowForPid((uint)_proc.Id, includeHidden: false, appSizedOnly: false);
+                if (splash != IntPtr.Zero && !IsAppSized(splash))
+                    ShowWindow(splash, SW_HIDE);
                 if (cand != IntPtr.Zero)
-                {
-                    if (IsAppSized(cand)) { _child = cand; }
-                    else { ShowWindow(cand, SW_HIDE); }
-                }
+                    _child = cand;
             }
             if (_child == IntPtr.Zero)
             {
@@ -104,12 +108,11 @@ public sealed class PobEmbedHost : HwndHost
                         // Splash/main handoff or PoB recreated its window —
                         // find the new app-sized one and re-capture.
                         _child = IntPtr.Zero;
-                        for (int j = 0; j < 50 && _child == IntPtr.Zero; j++)
+                        for (int j = 0; j < 75 && _child == IntPtr.Zero; j++)
                         {
                             await Task.Delay(200);
-                            var c2 = FindWindowByTitleContains("Path of Building");
-                            if (c2 != IntPtr.Zero && IsAppSized(c2)) _child = c2;
-                            else if (c2 != IntPtr.Zero) ShowWindow(c2, SW_HIDE);
+                            var c2 = FindWindowByTitle("Path of Building", includeHidden: true, appSizedOnly: true);
+                            if (c2 != IntPtr.Zero) _child = c2;
                         }
                         if (_child != IntPtr.Zero)
                         {
@@ -176,6 +179,7 @@ public sealed class PobEmbedHost : HwndHost
         SetParent(_child, host);
         SetWindowPos(_child, IntPtr.Zero, 0, 0, 0, 0,
             SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        ShowWindow(_child, SW_SHOWNA); // first time it becomes visible: inside the pane
         Dispatcher.Invoke(ResizeChild);
     }
 
@@ -185,36 +189,35 @@ public sealed class PobEmbedHost : HwndHost
         return (r.Right - r.Left) >= 700 && (r.Bottom - r.Top) >= 480;
     }
 
-    private static IntPtr FindWindowByTitleContains(string needle)
+    private static IntPtr FindWindowByTitle(string needle, bool includeHidden, bool appSizedOnly)
     {
         IntPtr found = IntPtr.Zero;
         EnumWindows((hwnd, _) =>
         {
-            if (!IsWindowVisible(hwnd) || GetParent(hwnd) != IntPtr.Zero) return true;
+            if (!includeHidden && !IsWindowVisible(hwnd)) return true;
+            if (GetParent(hwnd) != IntPtr.Zero) return true;
             var sb = new System.Text.StringBuilder(256);
             GetWindowText(hwnd, sb, sb.Capacity);
-            if (sb.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase))
-            {
-                found = hwnd;
-                return false;
-            }
-            return true;
+            if (!sb.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase)) return true;
+            if (appSizedOnly && !IsAppSized(hwnd)) return true;
+            found = hwnd;
+            return false;
         }, IntPtr.Zero);
         return found;
     }
 
-    private static IntPtr FindMainWindowForPid(uint pid)
+    private static IntPtr FindWindowForPid(uint pid, bool includeHidden, bool appSizedOnly)
     {
         IntPtr found = IntPtr.Zero;
         EnumWindows((hwnd, _) =>
         {
             GetWindowThreadProcessId(hwnd, out var wpid);
-            if (wpid == pid && IsWindowVisible(hwnd) && GetParent(hwnd) == IntPtr.Zero)
-            {
-                found = hwnd;
-                return false; // stop
-            }
-            return true;
+            if (wpid != pid) return true;
+            if (!includeHidden && !IsWindowVisible(hwnd)) return true;
+            if (GetParent(hwnd) != IntPtr.Zero) return true;
+            if (appSizedOnly && !IsAppSized(hwnd)) return true;
+            found = hwnd;
+            return false; // stop
         }, IntPtr.Zero);
         return found;
     }
@@ -247,6 +250,7 @@ public sealed class PobEmbedHost : HwndHost
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hwnd, int cmd);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
     private const int SW_HIDE = 0;
+    private const int SW_SHOWNA = 8;
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }
 

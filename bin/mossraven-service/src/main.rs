@@ -211,6 +211,7 @@ async fn run_tool_call(tool: &str, args_json: &str, pob_path: &str) -> anyhow::R
         "save_finalists" => surface.save_finalists(args).await,
         "rescore_archive" => surface.rescore_archive().await,
         "list_finalist_runs" => surface.list_finalist_runs().await,
+        "ops_status" => surface.ops_status().await,
         "get_vocab" => surface.get_vocab().await,
         "score_xml" => surface.score_xml(args).await,
         "retool_build" => surface.retool_build(args).await,
@@ -1386,6 +1387,28 @@ impl ControlSurface for ServiceControlSurface {
         let _ = self.ctx.archive.save_if_dirty(&self.ctx.archive_path);
         let synth = self.synthesize_finalists().await?;
         Ok(json!({ "mode": mode, "generations": done, "result": synth }))
+    }
+
+    /// Ops box data: corpus size + newest model report. Engine-served for
+    /// the same reason as list_finalist_runs.
+    async fn ops_status(&self) -> Result<Value, McpError> {
+        let mut corpus_bytes: u64 = 0;
+        let mut corpus_rows: u64 = 0;
+        if let Some(dir) = std::env::var_os("MOSSRAVEN_CORPUS_DIR") {
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for e in rd.flatten() {
+                    if e.file_name().to_string_lossy().starts_with("evals-") {
+                        if let Ok(m) = e.metadata() {
+                            corpus_bytes += m.len();
+                        }
+                        if let Ok(text) = std::fs::read_to_string(e.path()) {
+                            corpus_rows += text.lines().filter(|l| !l.trim().is_empty()).count() as u64;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(json!({ "corpus_bytes": corpus_bytes, "corpus_rows": corpus_rows }))
     }
 
     /// History data source: every finalists/<ts>/ run with parsed

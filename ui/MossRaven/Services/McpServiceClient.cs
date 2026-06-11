@@ -158,6 +158,9 @@ public sealed class McpServiceClient : IDisposable
     public Task<string> RetoolBuildAsync(string code, string mode, CancellationToken ct = default)
         => CallToolAsync("retool_build", JsonSerializer.SerializeToElement(new { code, mode }), ct);
 
+    public Task<string> OpsStatusAsync(CancellationToken ct = default)
+        => CallToolAsync("ops_status", JsonSerializer.SerializeToElement(new { }), ct);
+
     public Task<string> ListFinalistRunsAsync(CancellationToken ct = default)
         => CallToolAsync("list_finalist_runs", JsonSerializer.SerializeToElement(new { }), ct);
 

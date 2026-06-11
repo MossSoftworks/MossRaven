@@ -231,9 +231,22 @@ public partial class MainWindow : Window
     /// Falls back to direct disk when the service is down.</summary>
     private async void LoadFinalistHistoryViaService()
     {
+        // The daemon needs a few seconds on cold machines (PoB VM + dbs);
+        // retry instead of falling straight back to the unreliable disk scan.
+        string json = "";
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            try
+            {
+                json = await _service.ListFinalistRunsAsync();
+                if (json.TrimStart().StartsWith("{")) break;
+            }
+            catch { /* not up yet */ }
+            await System.Threading.Tasks.Task.Delay(2500);
+        }
         try
         {
-            var json = await _service.ListFinalistRunsAsync();
+            if (json.Length == 0) throw new Exception("service did not answer after retries");
             using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.TryGetProperty("runs", out var runs)
                 && runs.ValueKind == JsonValueKind.Array)

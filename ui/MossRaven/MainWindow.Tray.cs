@@ -76,6 +76,9 @@ public partial class MainWindow
         }
     }
 
+    /// <summary>Called by App when a second instance launches.</summary>
+    public void ShowFromInstanceSignal() => RestoreFromTray();
+
     private void RestoreFromTray()
     {
         Dispatcher.Invoke(() =>
