@@ -9,11 +9,15 @@
 //!   empty 200 shell. With the name it returns ~25 KB of live divine/exalted
 //!   exchange data. Unique types on this route return empty — it is the
 //!   currency-exchange feed only.
-//! - NOT YET FOUND: the unique-item overview route (`items/…` guesses 404).
-//!   `MOSSRAVEN_NINJA_ITEM_URL` overrides the template (placeholders
-//!   `{league}` and `{type}`) — confirm via browser devtools on
-//!   poe.ninja/poe2/economy/<league>/unique-weapon and set the env var; no
-//!   rebuild needed.
+//! - CONFIRMED `GET /poe2/api/economy/stash/{version}/item/overview
+//!   ?league=<DISPLAY NAME>&type=<PluralType>` — the unique-item prices.
+//!   Found via the page's island chunk (the page slug is PLURAL:
+//!   /poe2/economy/<slug>/unique-weapons; the singular page is a 404 shell,
+//!   which is why earlier probing missed the chunk). Type values are plural
+//!   (UniqueWeapons, UniqueArmours, ...). `lines[].primaryValue` is ALREADY
+//!   in divines (core.primary == "divine"; rates: 1 div ≈ 130 ex ≈ 10.7
+//!   chaos at discovery time). 148 weapon lines live on 2026-06-11.
+//!   `MOSSRAVEN_NINJA_ITEM_URL` still overrides the template if it moves.
 //!
 //! Behavior: gated by `MOSSRAVEN_NINJA=1`. On startup, refresh a price map
 //! (unique name → divine value) into `<data-dir>/ninja-prices.json` (24h
@@ -25,13 +29,18 @@ use serde_json::Value;
 
 const UA: &str = "MossRaven/0.1 (build-discovery; github.com/MossSoftworks/MossRaven)";
 const DEFAULT_ITEM_URL: &str =
-    "https://poe.ninja/poe2/api/economy/items/1/overview?league={league}&type={type}";
+    "https://poe.ninja/poe2/api/economy/stash/1/item/overview?league={league}&type={type}";
+/// Plural per the live API (matches the site nav: Equipment + Atlas).
 const UNIQUE_TYPES: &[&str] = &[
-    "UniqueWeapon",
-    "UniqueArmour",
-    "UniqueAccessory",
-    "UniqueJewel",
-    "UniqueFlask",
+    "UniqueWeapons",
+    "UniqueArmours",
+    "UniqueAccessories",
+    "UniqueFlasks",
+    "UniqueCharms",
+    "UniqueJewels",
+    "UniqueRelics",
+    "UniqueTablets",
+    "PrecursorTablets",
 ];
 
 pub async fn refresh_prices(data_dir: &std::path::Path) {
@@ -83,7 +92,7 @@ pub async fn refresh_prices(data_dir: &std::path::Path) {
         .unwrap_or_else(|_| DEFAULT_ITEM_URL.to_string());
     let mut prices: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     for ty in UNIQUE_TYPES {
-        let url = template.replace("{league}", &league).replace("{type}", ty);
+        let url = template.replace("{league}", &urlencode(&league)).replace("{type}", ty);
         match client.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(v) = resp.json::<Value>().await {
