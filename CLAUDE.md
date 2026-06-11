@@ -51,7 +51,7 @@ sandboxed processes see; the user's real session never sees them. The repo
   This masqueraded as flaky launches for two days ("works when you launch
   it, broken when I do").
 - **To act in the user's real world**: write a `.cmd` into the repo and run
-  it via `explorer.exe "path	o\script.cmd"` (Explorer = real-session
+  it via `explorer.exe with the script path` (Explorer = real-session
   parent). Same trick to launch the app in the user's true context for
   validation: `explorer.exe "...\dist\MossRaven.exe"`, then read
   `%TEMP%\mossraven-ui.log` (TEMP is shared enough for logs in practice —
