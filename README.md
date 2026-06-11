@@ -17,10 +17,10 @@ See [SPEC.md](SPEC.md) for the full design. See [docs/pob-deepdive.md](docs/pob-
 | `crates/pob` | real engine — fork-and-trim of poe2-agent (~3.9k loc); `init_smoke` + `parity` fixture tests; **`treedb.rs` passive-tree graph** (BFS pathing with weapon-set walls per PoB's `CanPathThroughAllocMode`); **`uniquedb.rs`** (368 uniques, variant-resolved item text); **passive point-budget accounting** from PoB's own model |
 | `crates/archive` | MAP-Elites grid, atomic disk persistence + resume, import-code encode/decode |
 | `crates/surrogate` | OpenAI-compat client + **failover chain (Cerebras→Groq→Gemini)** with 429 backoff/cooldown, datamined-vocab grounding, `MockSurrogate` |
-| `crates/dreamer` | Tier-1/5 drivers: Anthropic **or any OpenAI-compat endpoint** (Gemini/Groq/Ollama — free solo Mode A); Mode B external marker |
+| `crates/dreamer` | Tier-1/5/6 drivers: Anthropic **or any OpenAI-compat endpoint** (Gemini/Groq/Ollama — free solo Mode A); **Tier-5 pool selection + Tier-6 curation/authoring** (5 builds × 5 checkpoints + bossing/mapping/cost guides); **adversarial critics** (generate→critique→revise once); Mode B external marker |
 | `crates/mcp-server` | full stdio JSON-RPC framer; 7 tools including `save_finalists` (Mode B write-back) |
 | `crates/core` + `tier3.rs` | **steady-state MAP-Elites** cascade (parents drawn from archive elites — mutations compound); mutation applier (gem level/quality/swap, weapon-set swap, **pathed `allocate_notable`**, **`equip_unique` gear swaps**) with engine-forced offense-first exploration (gear + affordable tree picks); **passive point-budget guard** (over-budget variants never archived); `LocalBackend` pool + `RemoteBackend` |
-| `bin/mossraven-service` | daemon (MCP stdio) / `--headless` / `--tool` one-shots; finalist persistence; session + archive state; PoB2 version stamping |
+| `bin/mossraven-service` | daemon (MCP stdio) / `--headless` / `--tool` one-shots; finalist persistence (**.md + standalone .html + .xml + import code + pool.json + index.html**); `rescore_archive` maintenance; §1.1.2 cost stamping; session + archive state; PoB2 version stamping |
 | `bin/mossraven-node` | real `/score` via PobParser pool; bearer auth; `/health` reports workers + pob2 version |
 | `ui/MossRaven` (WPF) | live archive pane (click = copy import code), Tier-5 finalist cards with guides, **finalist History browser** (every saved run → full guide detail window), concept history, archive file-watcher |
 
