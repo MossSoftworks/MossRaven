@@ -225,13 +225,13 @@
                             <!-- PREFERENCES: autofill combos, 5 each -->
                             <TextBlock Text="Preferences (optional)" Style="{StaticResource PaneTitle}" Margin="0,16,0,4"/>
                             <TextBlock Style="{StaticResource TierDesc}"
-                                       Text="Steer the search: up to 5 desired uniques, skills, and tree notables. Folded into the hypothesis on Seed."/>
+                                       Text="Steer the search: desired uniques, gems, and passives. Folded into the hypothesis on Seed."/>
                             <TextBlock Text="Uniques" Foreground="{DynamicResource DimBrush}" FontSize="13" FontWeight="SemiBold" Margin="0,4,0,2"/>
-                            <StackPanel x:Name="PrefUniquesPanel"/>
-                            <TextBlock Text="Skills" Foreground="{DynamicResource DimBrush}" FontSize="13" FontWeight="SemiBold" Margin="0,8,0,2"/>
-                            <StackPanel x:Name="PrefSkillsPanel"/>
-                            <TextBlock Text="Tree notables" Foreground="{DynamicResource DimBrush}" FontSize="13" FontWeight="SemiBold" Margin="0,8,0,2"/>
-                            <StackPanel x:Name="PrefNodesPanel"/>
+                            <UniformGrid x:Name="PrefUniquesPanel" Rows="1" Columns="3"/>
+                            <TextBlock Text="Gems" Foreground="{DynamicResource DimBrush}" FontSize="13" FontWeight="SemiBold" Margin="0,8,0,2"/>
+                            <UniformGrid x:Name="PrefSkillsPanel" Rows="1" Columns="3"/>
+                            <TextBlock Text="Passives" Foreground="{DynamicResource DimBrush}" FontSize="13" FontWeight="SemiBold" Margin="0,8,0,2"/>
+                            <UniformGrid x:Name="PrefNodesPanel" Rows="1" Columns="3"/>
                         </StackPanel>
                     </ScrollViewer>
                 </Border>
@@ -479,67 +479,92 @@
                 <GridSplitter Grid.Column="3" Width="10" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
                               ResizeBehavior="PreviousAndNext" ResizeDirection="Columns" Cursor="SizeWE"/>
 
-                <!-- RIGHT: BUILD WORKSPACE (largest) -->
+                <!-- RIGHT: EMBEDDED PoB2 (the whole app, re-parented) -->
                 <Border Grid.Column="4" Style="{StaticResource Card}">
                     <Grid Margin="14,10,14,10">
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
-                        <DockPanel Grid.Row="0" LastChildFill="False">
+                        <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,8">
                             <StackPanel DockPanel.Dock="Left">
-                                <TextBlock x:Name="WsTitle" Text="Build workspace"
+                                <TextBlock x:Name="WsTitle" Text="Path of Building 2"
                                            Foreground="{DynamicResource TextBrush}" FontWeight="SemiBold" FontSize="17"/>
-                                <TextBlock x:Name="WsSubtitle" Text="Open a build from the list — view, edit the XML, re-score through PoB, save, or open in desktop PoB2."
+                                <TextBlock x:Name="WsSubtitle" Text="Click a build in the list — it loads here in the real PoB2. Set the PoB2 path in Settings (gear)."
                                            Foreground="{DynamicResource DimBrush}" FontSize="12.5" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock x:Name="WsStats" Foreground="{DynamicResource MossBrush}" FontWeight="SemiBold"
+                                           FontSize="13" VerticalAlignment="Center" Margin="0,0,10,0" Text=""/>
+                                <Button x:Name="WsEmbedButton" Content="Launch PoB2 here" Style="{StaticResource AccentBtn}"
+                                        ToolTip="Start (or re-attach) desktop PoB2 embedded in this pane"
+                                        Click="WsEmbedButton_Click"/>
                             </StackPanel>
                         </DockPanel>
 
-                        <TextBlock Grid.Row="1" x:Name="WsStats"
-                                   Foreground="{DynamicResource MossBrush}" FontWeight="SemiBold" FontSize="14.5"
-                                   Margin="0,8,0,0" TextWrapping="Wrap" Text=""/>
-                        <TextBlock Grid.Row="2" x:Name="WsViability"
-                                   Foreground="{DynamicResource DimBrush}" FontSize="12.5"
-                                   Margin="0,2,0,8" TextWrapping="Wrap" Text=""/>
-
-                        <Border Grid.Row="3" CornerRadius="8"
-                                Background="{DynamicResource BgBrush}"
+                        <Border Grid.Row="1" CornerRadius="8"
+                                Background="#0d0f12"
                                 BorderBrush="{DynamicResource DimmerBrush}"
                                 BorderThickness="1">
-                            <TextBox x:Name="WsXml"
-                                     AcceptsReturn="True"
-                                     TextWrapping="NoWrap"
-                                     VerticalScrollBarVisibility="Auto"
-                                     HorizontalScrollBarVisibility="Auto"
-                                     Background="Transparent"
-                                     Foreground="{DynamicResource TextBrush}"
-                                     CaretBrush="{DynamicResource CaretBrush}"
-                                     SelectionBrush="{DynamicResource SelectionBrush}"
-                                     BorderThickness="0"
-                                     Padding="10,8"
-                                     FontFamily="Cascadia Mono, Consolas"
-                                     FontSize="12"
-                                     Text="(no build loaded)"/>
+                            <Grid>
+                                <TextBlock x:Name="PobHostHint"
+                                           Text="PoB2 is not embedded yet — set its path in Settings, then Launch PoB2 here.&#10;Clicking a build always writes it into PoB2's Builds folder either way."
+                                           Foreground="{DynamicResource DimmerBrush}" FontSize="13"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           TextAlignment="Center" TextWrapping="Wrap" Margin="24"/>
+                                <ContentControl x:Name="PobHostSlot"/>
+                            </Grid>
                         </Border>
 
-                        <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,10,0,0">
-                            <Button x:Name="WsRescoreButton" Content="Re-score" Style="{StaticResource AccentBtn}"
-                                    Margin="0,0,6,0" ToolTip="Run the edited XML through the PoB judge"
-                                    Click="WsRescoreButton_Click"/>
-                            <Button x:Name="WsSaveButton" Content="Save" Style="{StaticResource GhostBtn}"
-                                    Margin="0,0,6,0" ToolTip="Save XML + import code to data\workspace\"
-                                    Click="WsSaveButton_Click"/>
-                            <Button x:Name="WsCopyCodeButton" Content="Copy code" Style="{StaticResource GhostBtn}"
-                                    Margin="0,0,6,0" ToolTip="Copy the PoB2 import code"
-                                    Click="WsCopyCodeButton_Click"/>
-                            <Button x:Name="WsOpenPobButton" Content="Open in PoB2" Style="{StaticResource GhostBtn}"
-                                    ToolTip="Write into PoB2's Builds folder and launch it (set the PoB2 path in Settings)"
-                                    Click="WsOpenPobButton_Click"/>
-                        </StackPanel>
+                        <Expander Grid.Row="2" Header="Build tools (XML · re-score · save)" Margin="0,8,0,0"
+                                  Foreground="{DynamicResource TextBrush}"
+                                  BorderBrush="{DynamicResource DimmerBrush}" BorderThickness="1">
+                            <Grid Margin="0,6,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="160"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" x:Name="WsViability"
+                                           Foreground="{DynamicResource DimBrush}" FontSize="12.5"
+                                           Margin="0,0,0,6" TextWrapping="Wrap" Text=""/>
+                                <Border Grid.Row="1" CornerRadius="8"
+                                        Background="{DynamicResource BgBrush}"
+                                        BorderBrush="{DynamicResource DimmerBrush}"
+                                        BorderThickness="1">
+                                    <TextBox x:Name="WsXml"
+                                             AcceptsReturn="True"
+                                             TextWrapping="NoWrap"
+                                             VerticalScrollBarVisibility="Auto"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             Background="Transparent"
+                                             Foreground="{DynamicResource TextBrush}"
+                                             CaretBrush="{DynamicResource CaretBrush}"
+                                             SelectionBrush="{DynamicResource SelectionBrush}"
+                                             BorderThickness="0"
+                                             Padding="10,8"
+                                             FontFamily="Cascadia Mono, Consolas"
+                                             FontSize="12"
+                                             Text="(no build loaded)"/>
+                                </Border>
+                                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,0">
+                                    <Button x:Name="WsRescoreButton" Content="Re-score" Style="{StaticResource AccentBtn}"
+                                            Margin="0,0,6,0" ToolTip="Run the edited XML through the PoB judge"
+                                            Click="WsRescoreButton_Click"/>
+                                    <Button x:Name="WsSaveButton" Content="Save" Style="{StaticResource GhostBtn}"
+                                            Margin="0,0,6,0" ToolTip="Save XML + import code to data\workspace\"
+                                            Click="WsSaveButton_Click"/>
+                                    <Button x:Name="WsCopyCodeButton" Content="Copy code" Style="{StaticResource GhostBtn}"
+                                            Margin="0,0,6,0" ToolTip="Copy the PoB2 import code"
+                                            Click="WsCopyCodeButton_Click"/>
+                                    <Button x:Name="WsOpenPobButton" Content="Open in PoB2 window" Style="{StaticResource GhostBtn}"
+                                            ToolTip="Write into PoB2's Builds folder and launch it standalone"
+                                            Click="WsOpenPobButton_Click"/>
+                                </StackPanel>
+                            </Grid>
+                        </Expander>
                     </Grid>
                 </Border>
             </Grid>
@@ -550,12 +575,12 @@
             <!-- BOTTOM: Service status (long) + Ops (square-ish) -->
             <Grid Grid.Row="3" Margin="12,0,12,0">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="10"/>
                     <ColumnDefinition Width="380" MinWidth="300"/>
+                    <ColumnDefinition Width="10"/>
+                    <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0" Style="{StaticResource Card}">
+                <Border Grid.Column="2" Style="{StaticResource Card}">
                     <DockPanel Margin="12,8,12,8" LastChildFill="True">
                         <TextBlock DockPanel.Dock="Top" Text="Service status" Style="{StaticResource PaneTitle}"/>
                         <TextBox x:Name="ServiceLog"
@@ -572,7 +597,7 @@
                     </DockPanel>
                 </Border>
 
-                <Border Grid.Column="2" Style="{StaticResource Card}">
+                <Border Grid.Column="0" Style="{StaticResource Card}">
                     <Grid Margin="12,8,12,8">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>

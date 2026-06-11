@@ -2,12 +2,13 @@
 //!
 //! Endpoint discovery log (2026-06-11, probed live):
 //! - CONFIRMED `GET /poe2/api/data/index-state` → league list
-//!   (`economyLeagues[].{name,url,indexed}`; current = "Runes of Aldur",
-//!   slug `runesofaldur`).
+//!   (`economyLeagues[].{name,url,indexed}`).
 //! - CONFIRMED `GET /poe2/api/economy/exchange/{version}/overview
-//!   ?league=<slug>&type=Currency` (template from the site's Astro bundle;
-//!   responds 200 with `{core:{items,rates,primary:"chaos",
-//!   secondary:"divine"},lines,items}` — empty for the leagues probed).
+//!   ?league=<DISPLAY NAME>&type=Currency` — the league param wants the
+//!   display name ("Runes of Aldur"), NOT the url slug; the slug returns an
+//!   empty 200 shell. With the name it returns ~25 KB of live divine/exalted
+//!   exchange data. Unique types on this route return empty — it is the
+//!   currency-exchange feed only.
 //! - NOT YET FOUND: the unique-item overview route (`items/…` guesses 404).
 //!   `MOSSRAVEN_NINJA_ITEM_URL` overrides the template (placeholders
 //!   `{league}` and `{type}`) — confirm via browser devtools on
@@ -61,6 +62,22 @@ pub async fn refresh_prices(data_dir: &std::path::Path) {
         return;
     };
     tracing::info!(league = %league, "ninja: current indexed league");
+    // Confirmed-live currency exchange — logs the divine rate as a sanity
+    // anchor and proves the wire end-to-end even while the unique-item
+    // route is unconfirmed.
+    if let Ok(resp) = client
+        .get(format!(
+            "https://poe.ninja/poe2/api/economy/exchange/1/overview?league={}&type=Currency",
+            urlencode(&league)
+        ))
+        .send()
+        .await
+    {
+        if let Ok(v) = resp.json::<Value>().await {
+            let n = v.get("lines").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+            tracing::info!(currency_lines = n, "ninja: live currency exchange confirmed");
+        }
+    }
 
     let template = std::env::var("MOSSRAVEN_NINJA_ITEM_URL")
         .unwrap_or_else(|_| DEFAULT_ITEM_URL.to_string());
@@ -102,7 +119,12 @@ pub async fn refresh_prices(data_dir: &std::path::Path) {
     }
 }
 
-/// Newest indexed league slug from the CONFIRMED index-state endpoint.
+fn urlencode(s: &str) -> String {
+    s.replace(' ', "%20")
+}
+
+/// Newest indexed league DISPLAY NAME from the CONFIRMED index-state
+/// endpoint (the API's league param wants the name, not the slug).
 async fn current_league(client: &reqwest::Client) -> Option<String> {
     let v: Value = client
         .get("https://poe.ninja/poe2/api/data/index-state")
@@ -116,7 +138,7 @@ async fn current_league(client: &reqwest::Client) -> Option<String> {
         .as_array()?
         .iter()
         .find(|l| l.get("indexed").and_then(Value::as_bool).unwrap_or(false))
-        .and_then(|l| l.get("url").and_then(Value::as_str))
+        .and_then(|l| l.get("name").and_then(Value::as_str))
         .map(String::from)
 }
 

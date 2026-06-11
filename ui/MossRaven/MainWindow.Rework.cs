@@ -56,11 +56,11 @@ public partial class MainWindow
     private void BuildPrefCombos()
     {
         var style = (Style)FindResource("PrefCombo");
-        for (int i = 0; i < 5; i++)
+        for (int i = 0; i < 3; i++)
         {
-            var u = new ComboBox { Style = style };
-            var s = new ComboBox { Style = style };
-            var n = new ComboBox { Style = style };
+            var u = new ComboBox { Style = style, Margin = new Thickness(0, 0, 4, 4) };
+            var s = new ComboBox { Style = style, Margin = new Thickness(0, 0, 4, 4) };
+            var n = new ComboBox { Style = style, Margin = new Thickness(0, 0, 4, 4) };
             _prefUniques.Add(u);
             _prefSkills.Add(s);
             _prefNodes.Add(n);
@@ -152,6 +152,71 @@ public partial class MainWindow
     private static string Snippet(string s, int max) =>
         s.Length <= max ? s : s.Substring(0, max) + "…";
 
+    // ----- Embedded PoB2 -----
+    private Services.PobEmbedHost? _pobHost;
+
+    private void WsEmbedButton_Click(object sender, RoutedEventArgs e) => EnsurePobEmbedded();
+
+    private void EnsurePobEmbedded()
+    {
+        if (_pobHost is { IsAlive: true }) return;
+        var pob = _settings.PobInstallPath ?? "";
+        if (pob.Length == 0 || !File.Exists(pob))
+        {
+            AppendLog("[pob-embed] set the PoB2 executable path in Settings (gear) first");
+            PobHostHint.Text = "Set the PoB2 executable path in Settings (gear icon), then Launch PoB2 here.";
+            return;
+        }
+        try
+        {
+            _pobHost = new Services.PobEmbedHost(pob, AppendLog);
+            PobHostSlot.Content = _pobHost;
+            PobHostHint.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"[pob-embed] failed: {ex.Message}");
+            PobHostHint.Visibility = Visibility.Visible;
+        }
+    }
+
+    /// <summary>Write the build into PoB2's Builds folder (always) and make
+    /// sure the embedded PoB2 is up so the user can open it immediately.</summary>
+    private void PushBuildToPob(string xml, string title)
+    {
+        try
+        {
+            var pob = _settings.PobInstallPath ?? "";
+            string buildsDir;
+            if (pob.Length > 0 && File.Exists(pob))
+            {
+                buildsDir = Path.Combine(Path.GetDirectoryName(pob) ?? ".", "Builds");
+                if (!Directory.Exists(buildsDir))
+                    buildsDir = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                        "Path of Building", "Builds");
+            }
+            else
+            {
+                buildsDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                    "Path of Building", "Builds");
+            }
+            Directory.CreateDirectory(buildsDir);
+            var safe = new string(title.Where(c => char.IsLetterOrDigit(c) || c == ' ' || c == '-').ToArray()).Trim();
+            if (safe.Length == 0) safe = "MossRaven build";
+            if (safe.Length > 40) safe = safe.Substring(0, 40);
+            var file = Path.Combine(buildsDir, $"MossRaven - {safe}.xml");
+            File.WriteAllText(file, xml);
+            AppendLog($"[pob] wrote '{Path.GetFileName(file)}' into PoB2 Builds — open it from PoB2's build list (refresh the list if it's already open)");
+            EnsurePobEmbedded();
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"[pob] push failed: {ex.Message}");
+        }
+    }
+
     // ----- Build Workspace -----
     private void LoadIntoWorkspace(BuildEntry entry)
     {
@@ -162,7 +227,9 @@ public partial class MainWindow
         WsXml.Text = string.IsNullOrEmpty(entry.PobXml)
             ? "(no XML on this entry — paste or re-score from code)"
             : entry.PobXml;
-        BuildListHint.Text = "Loaded into the workspace →";
+        if (!string.IsNullOrEmpty(entry.PobXml))
+            PushBuildToPob(entry.PobXml, entry.HeaderLine ?? "build");
+        BuildListHint.Text = "Loaded → PoB2 pane (and Build tools below it)";
     }
 
     private async void WsRescoreButton_Click(object sender, RoutedEventArgs e)
