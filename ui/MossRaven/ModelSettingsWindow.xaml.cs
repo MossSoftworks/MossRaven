@@ -49,6 +49,8 @@ public partial class ModelSettingsWindow : Window
         NinjaCheck.IsChecked = _settings.NinjaEnabled;
         NinjaUrlBox.Text = _settings.NinjaItemUrl ?? "";
         CorpusCheck.IsChecked = _settings.CorpusEnabled;
+        LaunchStartupCheck.IsChecked = _settings.LaunchAtStartup;
+        CloseToTrayCheck.IsChecked = _settings.CloseToTray;
         UpdateAnthropicRowVisibility();
     }
 
@@ -212,6 +214,8 @@ public partial class ModelSettingsWindow : Window
         _settings.NinjaEnabled = NinjaCheck.IsChecked == true;
         _settings.NinjaItemUrl = NinjaUrlBox.Text?.Trim() ?? "";
         _settings.CorpusEnabled = CorpusCheck.IsChecked == true;
+        _settings.LaunchAtStartup = LaunchStartupCheck.IsChecked == true;
+        _settings.CloseToTray = CloseToTrayCheck.IsChecked == true;
         SettingsService.Save(_settings);
         Saved = true;
         Close();

@@ -72,11 +72,17 @@ public sealed class PobEmbedHost : HwndHost
                     // fall through to the title search instead of bailing.
                     _log("[pob-embed] launcher exited early — searching by window title");
                 }
-                _child = FindMainWindowForPid((uint)_proc.Id);
-                // Fallback: the real window may belong to a CHILD process
-                // (updater stubs). Match any new top-level titled like PoB.
-                if (_child == IntPtr.Zero && i >= 25)
-                    _child = FindWindowByTitleContains("Path of Building");
+                var cand = FindMainWindowForPid((uint)_proc.Id);
+                if (cand == IntPtr.Zero && i >= 15)
+                    cand = FindWindowByTitleContains("Path of Building");
+                // Splash filter: PoB shows a small green status window first,
+                // then the REAL window. Only accept windows of app size —
+                // and hide the splash so nothing perceptibly pops out.
+                if (cand != IntPtr.Zero)
+                {
+                    if (IsAppSized(cand)) { _child = cand; }
+                    else { ShowWindow(cand, SW_HIDE); }
+                }
             }
             if (_child == IntPtr.Zero)
             {
@@ -93,6 +99,25 @@ public sealed class PobEmbedHost : HwndHost
                 while (_proc is { HasExited: false })
                 {
                     await Task.Delay(1500);
+                    if (_child != IntPtr.Zero && !IsWindow(_child))
+                    {
+                        // Splash/main handoff or PoB recreated its window —
+                        // find the new app-sized one and re-capture.
+                        _child = IntPtr.Zero;
+                        for (int j = 0; j < 50 && _child == IntPtr.Zero; j++)
+                        {
+                            await Task.Delay(200);
+                            var c2 = FindWindowByTitleContains("Path of Building");
+                            if (c2 != IntPtr.Zero && IsAppSized(c2)) _child = c2;
+                            else if (c2 != IntPtr.Zero) ShowWindow(c2, SW_HIDE);
+                        }
+                        if (_child != IntPtr.Zero)
+                        {
+                            try { Capture(host); _log("[pob-embed] main window captured after splash"); }
+                            catch { }
+                        }
+                        continue;
+                    }
                     if (_child == IntPtr.Zero) continue;
                     if (GetParent(_child) != host)
                     {
@@ -154,6 +179,12 @@ public sealed class PobEmbedHost : HwndHost
         Dispatcher.Invoke(ResizeChild);
     }
 
+    private static bool IsAppSized(IntPtr hwnd)
+    {
+        if (!GetWindowRect(hwnd, out var r)) return false;
+        return (r.Right - r.Left) >= 700 && (r.Bottom - r.Top) >= 480;
+    }
+
     private static IntPtr FindWindowByTitleContains(string needle)
     {
         IntPtr found = IntPtr.Zero;
@@ -212,6 +243,12 @@ public sealed class PobEmbedHost : HwndHost
     [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int w, int h, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder text, int count);
+    [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hwnd, int cmd);
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    private const int SW_HIDE = 0;
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int Left, Top, Right, Bottom; }
 
     private static int W32(long v) => unchecked((int)v);
 

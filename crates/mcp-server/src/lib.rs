@@ -135,6 +135,11 @@ pub fn control_surface_tools() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "list_finalist_runs".into(),
+            description: "List every saved finalists/<ts>/ run with its parsed finalists.json — the History browser's data source (served by the engine so UI-process filesystem quirks can't blank it).".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolSchema {
             name: "save_finalists".into(),
             description: "Persist curated finalists to the MossRaven data directory (finalists.json + per-finalist markdown guide, PoB XML, and import-code file). Mode A calls this automatically after synthesis; in Mode B the driving Claude calls it with the finalists it curated. Returns the directory written.".into(),
             input_schema: json!({
@@ -187,6 +192,10 @@ pub trait ControlSurface: Send + Sync {
     /// Retool a build for a play mode. Default: not implemented.
     async fn retool_build(&self, _args: Value) -> Result<Value, McpError> {
         Err(McpError::ToolFailed("retool_build not implemented".into()))
+    }
+    /// History data source. Default: not implemented.
+    async fn list_finalist_runs(&self) -> Result<Value, McpError> {
+        Err(McpError::ToolFailed("list_finalist_runs not implemented".into()))
     }
     /// Maintenance: re-score every archive elite with the current Tier 3 and
     /// drop entries that fail hard legality (passive point budget). Default:
@@ -379,6 +388,7 @@ async fn call_tool<S: ControlSurface>(
         "synthesize_finalists" => surface.synthesize_finalists().await,
         "save_finalists" => surface.save_finalists(args).await,
         "rescore_archive" => surface.rescore_archive().await,
+        "list_finalist_runs" => surface.list_finalist_runs().await,
         "get_vocab" => surface.get_vocab().await,
         "score_xml" => surface.score_xml(args).await,
         "retool_build" => surface.retool_build(args).await,

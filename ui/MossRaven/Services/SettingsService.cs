@@ -59,6 +59,13 @@ public sealed class Settings
     public string RescoreAt { get; set; } = "";
     public string TrainAt { get; set; } = "";
 
+    /// <summary>Register in HKCU Run so MossRaven starts with Windows (for churn).</summary>
+    public bool LaunchAtStartup { get; set; } = false;
+    /// <summary>Start hidden in the tray (pairs with LaunchAtStartup).</summary>
+    public bool StartMinimized { get; set; } = false;
+    /// <summary>Close button hides to tray; exit only via tray right-click.</summary>
+    public bool CloseToTray { get; set; } = true;
+
     public const int HistoryCap = 50;
 
     /// <summary>First-run defaults: the three built-ins, keys empty (env fallback).</summary>

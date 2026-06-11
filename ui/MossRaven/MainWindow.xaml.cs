@@ -66,6 +66,7 @@ public partial class MainWindow : Window
         {
             ApplyPersistedState();
             InitRework();
+            InitTray();
             // Identity stamp: kills the which-exe-did-you-launch class of
             // bug forever (stale Debug builds masquerading as current).
             var exePath = Environment.ProcessPath ?? "?";
@@ -77,7 +78,7 @@ public partial class MainWindow : Window
             _ = LoadVocabAsync();
             // History self-diagnostic on EVERY launch (log-only) — no click
             // needed for the [history] lines to appear.
-            try { LoadFinalistHistory(); } catch (Exception hx) { AppendLog($"[history] startup scan failed: {hx.Message}"); }
+            try { LoadFinalistHistoryViaService(); } catch (Exception hx) { AppendLog($"[history] startup scan failed: {hx.Message}"); }
             // PoB2 autolaunch every open (first open downloads the official
             // portable once). Toggle: Settings → AutoEmbedPob.
             if (_settings.AutoEmbedPob) EnsurePobEmbedded();
@@ -215,7 +216,7 @@ public partial class MainWindow : Window
             BuildListHint.Text = "Click a build to copy its PoB import code to clipboard.";
             return;
         }
-        LoadFinalistHistory();
+        LoadFinalistHistoryViaService();
         BuildList.Visibility = Visibility.Collapsed;
         FinalistHistoryScroller.Visibility = Visibility.Visible;
         FinalistHistoryButton.Content = "Archive";
@@ -223,6 +224,78 @@ public partial class MainWindow : Window
     }
 
     private bool _historyRetryDone;
+
+    /// <summary>Service-backed history: the engine process reads the data
+    /// dir reliably in every launch context; this UI process demonstrably
+    /// does not (Explorer-launched WPF saw exists=False on a real dir).
+    /// Falls back to direct disk when the service is down.</summary>
+    private async void LoadFinalistHistoryViaService()
+    {
+        try
+        {
+            var json = await _service.ListFinalistRunsAsync();
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("runs", out var runs)
+                && runs.ValueKind == JsonValueKind.Array)
+            {
+                FinalistHistoryPanel.Children.Clear();
+                int rendered = 0;
+                bool first = true;
+                foreach (var run in runs.EnumerateArray())
+                {
+                    var ts = run.TryGetProperty("ts", out var t) ? t.GetString() ?? "?" : "?";
+                    if (!run.TryGetProperty("finalists", out var arr)
+                        || arr.ValueKind != JsonValueKind.Array
+                        || arr.GetArrayLength() == 0) continue;
+                    try
+                    {
+                        var exp = BuildRunExpanderFromArray(ts, arr, expandByDefault: first);
+                        FinalistHistoryPanel.Children.Add(exp);
+                        first = false;
+                        rendered++;
+                    }
+                    catch (Exception rex)
+                    {
+                        AppendLog($"[history] run {ts} render failed: {rex.Message}");
+                    }
+                }
+                AppendLog($"[history] service-backed: rendered {rendered} runs");
+                if (rendered > 0) return;
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"[history] service path failed ({ex.Message}) — falling back to disk scan");
+        }
+        LoadFinalistHistory();
+    }
+
+    /// <summary>Expander from an in-memory finalists array (service-backed path).</summary>
+    private Expander BuildRunExpanderFromArray(string tsName, JsonElement arr, bool expandByDefault)
+    {
+        var when = long.TryParse(tsName, out var unix)
+            ? DateTimeOffset.FromUnixTimeSeconds(unix).ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+            : tsName;
+        var firstTitle = arr[0].TryGetProperty("title", out var t) ? t.GetString() : "";
+        var header = new TextBlock
+        {
+            Text = $"{when}   ·   {arr.GetArrayLength()} builds   ·   {firstTitle}…",
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 13,
+        };
+        header.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
+        var body = new StackPanel { Margin = new Thickness(6, 4, 0, 6) };
+        foreach (var fin in arr.EnumerateArray())
+            body.Children.Add(BuildFinalistRow(fin));
+        return new Expander
+        {
+            Header = header,
+            Content = body,
+            IsExpanded = expandByDefault,
+            Margin = new Thickness(4, 3, 4, 3),
+            BorderThickness = new Thickness(1),
+        };
+    }
 
     private void LoadFinalistHistory()
     {

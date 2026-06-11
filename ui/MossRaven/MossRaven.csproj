@@ -6,11 +6,19 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>Assets\mossraven.ico</ApplicationIcon>
     <RootNamespace>MossRaven</RootNamespace>
     <AssemblyName>MossRaven</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WinForms is only here for NotifyIcon (tray); keep its namespace out
+         of the global usings so WPF types stay unambiguous. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
 
   <!-- Single-file publish per Moss-family convention. dist/Windows/ contains
        MossRaven.exe + mossraven-service.exe (Rust sidecar) and nothing else. -->

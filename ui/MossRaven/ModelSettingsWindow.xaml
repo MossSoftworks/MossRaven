@@ -80,6 +80,10 @@
                              BorderBrush="{DynamicResource DimmerBrush}"
                              ToolTip="Optional item-overview route template with {league}/{type} placeholders"/>
                 </DockPanel>
+                <CheckBox x:Name="LaunchStartupCheck" Content="Launch MossRaven with Windows (minimized to tray — keeps churn schedules alive)"
+                          Foreground="{DynamicResource TextBrush}" Margin="0,0,0,6"/>
+                <CheckBox x:Name="CloseToTrayCheck" Content="Close button minimizes to tray (exit via tray right-click)"
+                          Foreground="{DynamicResource TextBrush}" Margin="0,0,0,6"/>
                 <CheckBox x:Name="CorpusCheck" Content="Log every PoB eval to the training corpus (Tier-3 data factory)"
                           Foreground="{DynamicResource TextBrush}"/>
             </StackPanel>

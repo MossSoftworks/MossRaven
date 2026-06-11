@@ -220,6 +220,73 @@ fn equipped_base(xml: &str, slot: &str) -> Option<String> {
     lines.get(2).or_else(|| lines.get(1)).map(|l| (*l).to_string())
 }
 
+/// [LADDER META] block from poe.ninja's cached builds snapshot
+/// (data-dir/ninja-meta.json, written by the service's ninja refresh).
+/// Gives the surrogate popularity context: overrepresented = meta = penalize
+/// for novelty; absent = the discovery space. Loaded once per process.
+fn ladder_meta_block() -> &'static str {
+    static BLOCK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BLOCK.get_or_init(|| {
+        let Some(dir) = std::env::var_os("MOSSRAVEN_CORPUS_DIR") else {
+            return String::new();
+        };
+        let path = std::path::Path::new(&dir)
+            .parent()
+            .map(|p| p.join("ninja-meta.json"))
+            .unwrap_or_default();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return String::new();
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return String::new();
+        };
+        // Shape-tolerant: look for arrays of {key|name, count|value} pairs in
+        // any top-level map entry mentioning skills/classes.
+        let mut lines = Vec::new();
+        if let Some(obj) = v.as_object() {
+            for (k, val) in obj {
+                let lk = k.to_lowercase();
+                if !(lk.contains("skill") || lk.contains("class") || lk.contains("ascend")) {
+                    continue;
+                }
+                if let Some(arr) = val.as_array() {
+                    let mut tally: Vec<(String, f64)> = arr
+                        .iter()
+                        .filter_map(|e| {
+                            let name = e
+                                .get("key")
+                                .or_else(|| e.get("name"))
+                                .and_then(|x| x.as_str())?;
+                            let n = e
+                                .get("count")
+                                .or_else(|| e.get("value"))
+                                .and_then(|x| x.as_f64())
+                                .unwrap_or(1.0);
+                            Some((name.to_string(), n))
+                        })
+                        .collect();
+                    tally.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    if !tally.is_empty() {
+                        let top: Vec<String> = tally
+                            .iter()
+                            .take(12)
+                            .map(|(n, c)| format!("{n} ({c:.0})"))
+                            .collect();
+                        lines.push(format!("  {k}: {}", top.join(", ")));
+                    }
+                }
+            }
+        }
+        if lines.is_empty() {
+            return String::new();
+        }
+        format!(
+            "\n[LADDER META — current league popularity from poe.ninja. These are              OVERREPRESENTED: treat as the meta to deviate from; novelty lives in              what is NOT on this list]\n{}\n",
+            lines.join("\n")
+        )
+    })
+}
+
 /// Cheap non-cryptographic 64-bit hash for "did this string change" diffs in
 /// trace logs. FNV-1a — no extra deps, distinguishes 1-char changes reliably.
 fn simple_hash(s: &str) -> u64 {
@@ -431,7 +498,7 @@ impl SearchEngine {
             Some(r) => format!(
                 "{concept}\n[FOCUS REGION: {r} — bias mutations toward MAP-Elites cells matching this pattern]{notables_block}{uniques_block}"
             ),
-            None => format!("{concept}{notables_block}{uniques_block}"),
+            None => format!("{concept}{notables_block}{uniques_block}{}", ladder_meta_block()),
         };
         let proposals = self
             .surrogate

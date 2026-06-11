@@ -210,6 +210,7 @@ async fn run_tool_call(tool: &str, args_json: &str, pob_path: &str) -> anyhow::R
         "synthesize_finalists" => surface.synthesize_finalists().await,
         "save_finalists" => surface.save_finalists(args).await,
         "rescore_archive" => surface.rescore_archive().await,
+        "list_finalist_runs" => surface.list_finalist_runs().await,
         "get_vocab" => surface.get_vocab().await,
         "score_xml" => surface.score_xml(args).await,
         "retool_build" => surface.retool_build(args).await,
@@ -1385,6 +1386,43 @@ impl ControlSurface for ServiceControlSurface {
         let _ = self.ctx.archive.save_if_dirty(&self.ctx.archive_path);
         let synth = self.synthesize_finalists().await?;
         Ok(json!({ "mode": mode, "generations": done, "result": synth }))
+    }
+
+    /// History data source: every finalists/<ts>/ run with parsed
+    /// finalists.json. Engine-served so the UI never depends on its own
+    /// process being able to enumerate the data dir (observed failing on
+    /// Explorer-launched WPF while this process reads fine).
+    async fn list_finalist_runs(&self) -> Result<Value, McpError> {
+        let base = self
+            .ctx
+            .archive_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("finalists");
+        let mut runs = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&base) {
+            for e in rd.flatten() {
+                let dir = e.path();
+                let ts = e.file_name().to_string_lossy().to_string();
+                let fj = dir.join("finalists.json");
+                let Ok(text) = std::fs::read_to_string(&fj) else { continue };
+                let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+                let arr = if v.is_array() {
+                    v
+                } else {
+                    v.get("finalists").cloned().unwrap_or(Value::Null)
+                };
+                if arr.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+                    runs.push(json!({ "ts": ts, "dir": dir.display().to_string(), "finalists": arr }));
+                }
+            }
+        }
+        runs.sort_by(|a, b| {
+            let ta = a["ts"].as_str().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            let tb = b["ts"].as_str().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            tb.cmp(&ta)
+        });
+        Ok(json!({ "runs": runs }))
     }
 
     /// Maintenance: re-run Tier 3 on every archive elite. Refreshes stats
