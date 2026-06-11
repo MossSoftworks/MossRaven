@@ -649,7 +649,7 @@ impl SurrogateProvider for OpenAiCompatSurrogate {
             .and_then(|m| m.as_array())
             .ok_or_else(|| SurrogateError::Schema(format!("expected `mutations` array: {parsed}")))?;
 
-        Ok(arr
+        let proposals: Vec<MutationProposal> = arr
             .iter()
             .filter_map(|m| {
                 let variant_id = m.get("variant_id").and_then(|v| v.as_str())?.to_string();
@@ -674,7 +674,55 @@ impl SurrogateProvider for OpenAiCompatSurrogate {
                     ops,
                 })
             })
-            .collect())
+            .collect();
+
+        // §3.6 Tier-2 adversarial critic — env-gated (`MOSSRAVEN_T2_CRITIC=1`):
+        // Tier 3 is already ground truth, so the critic's only value here is
+        // saving sim cycles on known-dead ops. One cheap call; verdict
+        // failures are non-fatal and unflagged variants always survive.
+        if std::env::var("MOSSRAVEN_T2_CRITIC").map(|v| v == "1").unwrap_or(false)
+            && !proposals.is_empty()
+        {
+            let digest: String = proposals
+                .iter()
+                .map(|p| {
+                    format!(
+                        "- {}: {}\n  ops: {}\n",
+                        p.variant_id,
+                        p.origin_hypothesis.as_deref().unwrap_or(""),
+                        serde_json::to_string(&p.ops).unwrap_or_default()
+                    )
+                })
+                .collect();
+            let critic_system = "You are an adversarial reviewer of PoE2 build-mutation ops. \
+                 Flag ONLY variants whose ops are KNOWN no-ops or illegal: support-gem level \
+                 changes (supports are binary in PoE2), ops duplicating another variant's ops \
+                 exactly, or empty ops arrays. Output ONLY JSON: {\"flagged\": [\"m1\", ...]} \
+                 — an empty array when nothing is concretely wrong.";
+            match self.chat(critic_system, &digest).await {
+                Ok(verdict_raw) => {
+                    let flagged: Vec<String> = Self::extract_json(&verdict_raw)
+                        .and_then(|v| {
+                            v.get("flagged").and_then(|f| f.as_array()).map(|a| {
+                                a.iter()
+                                    .filter_map(|s| s.as_str().map(String::from))
+                                    .collect()
+                            })
+                        })
+                        .unwrap_or_default();
+                    if !flagged.is_empty() {
+                        tracing::warn!(?flagged, "tier-2 critic flagged variants; dropped");
+                        return Ok(proposals
+                            .into_iter()
+                            .filter(|p| !flagged.contains(&p.variant_id))
+                            .collect());
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "tier-2 critic call failed (non-fatal)"),
+            }
+        }
+
+        Ok(proposals)
     }
 
     async fn cheap_score(

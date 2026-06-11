@@ -864,6 +864,23 @@ impl ControlSurface for ServiceControlSurface {
             }
             Err(e) => return Err(McpError::ToolFailed(e.to_string())),
         };
+        // §3.6 adversarial critic on the hypothesis — non-fatal: a bad
+        // hypothesis still gets ground-truthed by Tier 3; the critic's value
+        // is catching incoherent mechanics before a session burns on them.
+        if let Ok((ok, issues)) = self
+            .ctx
+            .dreamer
+            .review(
+                "tier1-hypothesis",
+                &serde_json::to_value(&hypothesis).unwrap_or_default(),
+                &json!({ "user_concept": concept }),
+            )
+            .await
+        {
+            if !ok {
+                tracing::warn!(?issues, "tier-1 hypothesis critic raised issues (non-fatal)");
+            }
+        }
         *self.ctx.last_hypothesis.lock() = Some(hypothesis.clone());
         // Seed resolution: env override → Tier-1 grounding → concept-matched
         // library seed → bundled default. See Context::resolve_seed_for.
@@ -983,7 +1000,9 @@ impl ControlSurface for ServiceControlSurface {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Ok(json!({
-            "frontier": snap.into_iter().take(10).map(|(coords, entry)| json!({
+            // 24 (was 10): Tier 5 nominates a 15-20 pool, so the selector
+            // needs more raw material than the old single-stage curator did.
+            "frontier": snap.into_iter().take(24).map(|(coords, entry)| json!({
                 "coords": coords,
                 "cell": format!(
                     "{}/{}/{}/{}",
@@ -1008,6 +1027,9 @@ impl ControlSurface for ServiceControlSurface {
                 // the LLM to re-encode it (a Claude-generated import code would
                 // be nonsense).
                 "pob_import_code": mossraven_archive::encode_pob_import_code(&entry.pob_xml),
+                // SPEC 1.1.2 cost layer — Tier 5/6 curate on value.
+                "estimated_cost_div": entry.estimated_cost_div,
+                "cost_band": entry.cost_band,
                 // SPEC 1.1.4 all-content viability gate — reported per entry
                 // so Tier-5 prose can quote pass/fail verbatim.
                 "viability": mossraven_core::viability::check(&entry.stats),
@@ -1036,90 +1058,188 @@ impl ControlSurface for ServiceControlSurface {
             }
             f
         };
-        match self.ctx.dreamer.synthesize_finalists(&slim_frontier).await {
-            Ok(mut finalists) => {
-                // Models OMIT pob_import_code (echoing ten ~11 KB codes blows
-                // any output budget and truncates the JSON — observed live on
-                // Gemini). Re-attach by variant_id from the frontier we just
-                // built; unknown variant_ids keep an empty code and get a WARN
-                // so a hallucinated finalist can't carry a wrong build.
-                let entry_by_variant: std::collections::HashMap<String, &Value> = frontier
-                    .get("frontier")
-                    .and_then(|f| f.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|e| Some((e.get("variant_id")?.as_str()?.to_string(), e)))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                for f in &mut finalists {
-                    let Some(entry) = entry_by_variant.get(&f.variant_id) else {
-                        tracing::warn!(
-                            variant = %f.variant_id,
-                            title = %f.title,
-                            "finalist references a variant not on the frontier; nothing backfilled"
-                        );
-                        continue;
-                    };
-                    if f.pob_import_code.is_empty() {
-                        if let Some(code) = entry.get("pob_import_code").and_then(|c| c.as_str()) {
-                            f.pob_import_code = code.to_string();
-                        }
-                    }
-                    // `cell` and `key_stats` are serde-defaulted for the same
-                    // reason as the import code: models drop fields. Ground
-                    // truth lives on the frontier — backfill, don't trust.
-                    if f.cell.is_empty() {
-                        if let Some(cell) = entry.get("cell").and_then(|c| c.as_str()) {
-                            f.cell = cell.to_string();
-                        }
-                    }
-                    if f.key_stats.is_empty() {
-                        let stat = |k: &str| entry.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        f.key_stats = vec![
-                            mossraven_dreamer::KeyStat {
-                                label: "DPS".into(),
-                                value: format!("{:.0}", stat("total_dps")),
-                            },
-                            mossraven_dreamer::KeyStat {
-                                label: "EHP".into(),
-                                value: format!("{:.0}", stat("effective_hp")),
-                            },
-                            mossraven_dreamer::KeyStat {
-                                label: "Energy Shield".into(),
-                                value: format!("{:.0}", stat("energy_shield")),
-                            },
-                        ];
-                    }
-                }
-                // Mode A: persist immediately — the files ARE the deliverable
-                // (SPEC §1.1). A persistence failure is logged but doesn't
-                // void the synthesis.
-                let saved_to = match persist_finalists(&self.ctx, &finalists) {
-                    Ok(dir) => Some(dir.display().to_string()),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "finalist persistence failed");
-                        None
-                    }
-                };
-                Ok(json!({
-                    "finalists": finalists,
-                    "source_frontier_size": frontier.get("frontier").and_then(|f| f.as_array()).map(|a| a.len()).unwrap_or(0),
-                    "saved_to": saved_to,
-                }))
-            }
+        // ---- Tier 5 (SPEC §1.1.3): SELECT a pool of 15–20 candidates ----
+        let pool = match self.ctx.dreamer.select_pool(&slim_frontier).await {
+            Ok(p) => p,
             Err(mossraven_dreamer::DreamerError::DriverIsExternal) => {
                 // Mode B: hand the frontier to the external Claude with the
-                // finalist schema; it curates, then writes back via the
+                // v2 schema; it selects + curates, then writes back via the
                 // save_finalists tool.
-                Ok(json!({
+                return Ok(json!({
                     "external": true,
                     "frontier": frontier.get("frontier").cloned().unwrap_or(json!([])),
-                    "instructions": "Mode B: synthesize Finalists yourself from this frontier. Schema: {variant_id, title, one_liner, why_it_works, tags[], cell, key_stats[{label,value}], pob_import_code, guide:{leveling, endgame, loadout_swap, playtest_notes}}. The guide is REQUIRED (SPEC 1.1): leveling = act milestones + gem/passive order + respec points; endgame = final tree direction + gear priorities + breakpoints; loadout_swap = clear-vs-boss duality via PoE2 weapon-set swap (which gems/passives per weapon set), or an EXPLICIT statement the build can't dual-loadout cleanly; playtest_notes = what PoB can't model (never claim it's fun). Copy variant_id/cell/pob_import_code VERBATIM. When done, call save_finalists with {\"finalists\":[...]} to persist them to disk.",
-                }))
+                    "instructions": "Mode B v2 (SPEC 1.1.3): first SELECT a pool of 15-20 candidates, then CURATE exactly 5 and write full guides. Finalist schema: {variant_id, title, one_liner, why_it_works, tags[], cell, key_stats[{label,value}], pob_import_code, guide:{leveling, endgame, loadout_swap, playtest_notes, checkpoints:[5 x {name, levels, gems, passives, gear}], bossing, mapping, cost_notes}}. Checkpoints are CP1 Acts1-2 (1-25), CP2 Act3+Cruel (25-45), CP3 maps entry (45-65), CP4 early maps+ascendancy (65-85), CP5 pinnacle-ready (85+). Curate on viability honesty, VALUE (effectiveness per divine -- giving up 1M DPS on a 10M build to save 90% cost is a WIN; spread cost bands), and playstyle diversity. Copy variant_id/cell/pob_import_code VERBATIM. When done, call save_finalists with {\"finalists\":[...]}.",
+                }));
             }
-            Err(e) => Err(McpError::ToolFailed(format!("synthesize_finalists: {e}"))),
+            Err(e) => return Err(McpError::ToolFailed(format!("select_pool (tier 5): {e}"))),
+        };
+
+        let entry_by_variant: std::collections::HashMap<String, &Value> = frontier
+            .get("frontier")
+            .and_then(|f| f.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| Some((e.get("variant_id")?.as_str()?.to_string(), e)))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Mechanical pool gate: drop hallucinated ids + duplicates BEFORE
+        // spending Tier-6 tokens. Never trust what a string lookup can check.
+        let mut seen = std::collections::HashSet::new();
+        let pool: Vec<mossraven_dreamer::PoolCandidate> = pool
+            .into_iter()
+            .filter(|c| {
+                if !entry_by_variant.contains_key(&c.variant_id) {
+                    tracing::warn!(variant = %c.variant_id, title = %c.title,
+                        "pool gate: candidate not on the frontier; dropped");
+                    return false;
+                }
+                if !seen.insert(c.variant_id.clone()) {
+                    tracing::warn!(variant = %c.variant_id, "pool gate: duplicate; dropped");
+                    return false;
+                }
+                true
+            })
+            .collect();
+        if pool.is_empty() {
+            return Err(McpError::ToolFailed(
+                "select_pool returned no valid candidates (all hallucinated/duplicate)".into(),
+            ));
         }
+        tracing::info!(pool_size = pool.len(), "tier-5 selection pool gated");
+
+        // §3.6 adversarial critic on the pool — non-fatal: the Tier-6 stage
+        // re-grounds everything against the frontier anyway; log issues.
+        if let Ok((ok, issues)) = self
+            .ctx
+            .dreamer
+            .review("tier5-pool", &json!({ "pool": &pool }), &slim_frontier)
+            .await
+        {
+            if !ok {
+                tracing::warn!(?issues, "tier-5 pool critic raised issues (non-fatal)");
+            }
+        }
+
+        // ---- Tier 6 (SPEC §1.1.3): CURATE 5 + WRITE the guides ----
+        // generate → mechanical gate → (retry once) → critic → (revise once)
+        let mut finalists = self
+            .ctx
+            .dreamer
+            .write_finalists(&pool, &slim_frontier)
+            .await
+            .map_err(|e| McpError::ToolFailed(format!("write_finalists (tier 6): {e}")))?;
+        let pool_ids: std::collections::HashSet<&str> =
+            pool.iter().map(|c| c.variant_id.as_str()).collect();
+        let issues = tier6_mechanical_issues(&finalists, &pool_ids, pool.len());
+        if !issues.is_empty() {
+            tracing::warn!(?issues, "tier-6 mechanical gate failed; one retry with issues attached");
+            let mut annotated = slim_frontier.clone();
+            if let Some(obj) = annotated.as_object_mut() {
+                obj.insert("reviewer_issues".into(), json!(issues));
+                obj.insert(
+                    "reviewer_instruction".into(),
+                    json!("Your previous draft violated these MECHANICAL requirements. Fix every one."),
+                );
+            }
+            finalists = self
+                .ctx
+                .dreamer
+                .write_finalists(&pool, &annotated)
+                .await
+                .map_err(|e| McpError::ToolFailed(format!("write_finalists retry: {e}")))?;
+            let still = tier6_mechanical_issues(&finalists, &pool_ids, pool.len());
+            if !still.is_empty() {
+                tracing::warn!(?still, "tier-6 mechanical issues persist after retry; shipping with warnings");
+            }
+        } else if let Ok((ok, critic_issues)) = self
+            .ctx
+            .dreamer
+            .review(
+                "tier6-finalists",
+                &json!({ "finalists": &finalists }),
+                &slim_frontier,
+            )
+            .await
+        {
+            // LLM critic only when mechanics passed (one revision budget total).
+            if !ok && !critic_issues.is_empty() {
+                tracing::warn!(?critic_issues, "tier-6 critic raised issues; one revision");
+                let mut annotated = slim_frontier.clone();
+                if let Some(obj) = annotated.as_object_mut() {
+                    obj.insert("reviewer_issues".into(), json!(critic_issues));
+                    obj.insert(
+                        "reviewer_instruction".into(),
+                        json!("An adversarial reviewer found these concrete errors in your previous draft. Fix exactly these."),
+                    );
+                }
+                match self.ctx.dreamer.write_finalists(&pool, &annotated).await {
+                    Ok(revised) => finalists = revised,
+                    Err(e) => tracing::warn!(error = %e, "tier-6 revision failed; shipping the draft"),
+                }
+            }
+        }
+
+        // Backfill ground truth by variant_id: models drop/garble fields;
+        // the frontier is authoritative for codes, cells, and numbers.
+        for f in &mut finalists {
+            let Some(entry) = entry_by_variant.get(&f.variant_id) else {
+                tracing::warn!(
+                    variant = %f.variant_id,
+                    title = %f.title,
+                    "finalist references a variant not on the frontier; nothing backfilled"
+                );
+                continue;
+            };
+            if f.pob_import_code.is_empty() {
+                if let Some(code) = entry.get("pob_import_code").and_then(|c| c.as_str()) {
+                    f.pob_import_code = code.to_string();
+                }
+            }
+            if f.cell.is_empty() {
+                if let Some(cell) = entry.get("cell").and_then(|c| c.as_str()) {
+                    f.cell = cell.to_string();
+                }
+            }
+            if f.key_stats.is_empty() {
+                let stat = |k: &str| entry.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let band = entry
+                    .get("cost_band")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("");
+                f.key_stats = vec![
+                    mossraven_dreamer::KeyStat {
+                        label: "DPS".into(),
+                        value: format!("{:.0}", stat("total_dps")),
+                    },
+                    mossraven_dreamer::KeyStat {
+                        label: "EHP".into(),
+                        value: format!("{:.0}", stat("effective_hp")),
+                    },
+                    mossraven_dreamer::KeyStat {
+                        label: "Cost".into(),
+                        value: band.to_string(),
+                    },
+                ];
+            }
+        }
+        // Mode A: persist immediately — the files ARE the deliverable
+        // (SPEC §1.1). A persistence failure is logged but doesn't
+        // void the synthesis.
+        let saved_to = match persist_finalists_v2(&self.ctx, &finalists, Some(&pool)) {
+            Ok(dir) => Some(dir.display().to_string()),
+            Err(e) => {
+                tracing::warn!(error = %e, "finalist persistence failed");
+                None
+            }
+        };
+        Ok(json!({
+            "finalists": finalists,
+            "pool_size": pool.len(),
+            "source_frontier_size": frontier.get("frontier").and_then(|f| f.as_array()).map(|a| a.len()).unwrap_or(0),
+            "saved_to": saved_to,
+        }))
     }
 
     /// Mode B write-back: the external Claude curated finalists and hands them
@@ -1189,6 +1309,9 @@ impl ControlSurface for ServiceControlSurface {
                     }
                     entry.stats = stats.clone();
                     entry.data_version = data_version.clone();
+                    let cost_est = mossraven_core::cost::estimate_cost(&entry.pob_xml);
+                    entry.estimated_cost_div = cost_est.total_div;
+                    entry.cost_band = cost_est.band.to_string();
                     kept.push((coords, entry));
                 }
                 Some(Err(e)) => {
@@ -1226,13 +1349,76 @@ impl ControlSurface for ServiceControlSurface {
     }
 }
 
-/// Write finalists to `<data-dir>/finalists/<unix-ts>/`:
-/// `finalists.json` (the full array) plus, per finalist, a human-readable
-/// markdown guide, the raw PoB XML (from the archive by variant_id, falling
-/// back to decoding the import code), and the paste-ready import code.
+/// SPEC §1.1.3 Tier-6 mechanical gate — requirements a string check can
+/// verify; never spend critic tokens on these. Returns human-readable
+/// violations for the retry prompt.
+fn tier6_mechanical_issues(
+    finalists: &[mossraven_dreamer::Finalist],
+    pool_ids: &std::collections::HashSet<&str>,
+    pool_size: usize,
+) -> Vec<String> {
+    let mut issues = Vec::new();
+    let want = 5.min(pool_size);
+    if finalists.len() != want {
+        issues.push(format!(
+            "must return exactly {want} finalists (pool has {pool_size}); got {}",
+            finalists.len()
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for f in finalists {
+        if !pool_ids.contains(f.variant_id.as_str()) {
+            issues.push(format!(
+                "finalist '{}' uses variant_id '{}' that is NOT in the selection pool",
+                f.title, f.variant_id
+            ));
+        }
+        if !seen.insert(f.variant_id.clone()) {
+            issues.push(format!("variant_id '{}' picked twice", f.variant_id));
+        }
+        match &f.guide {
+            None => issues.push(format!("finalist '{}' has no guide object", f.title)),
+            Some(g) => {
+                if g.checkpoints.len() != 5 {
+                    issues.push(format!(
+                        "finalist '{}' has {} checkpoints; SPEC §1.1 requires exactly 5",
+                        f.title,
+                        g.checkpoints.len()
+                    ));
+                }
+                if g.bossing.trim().is_empty() {
+                    issues.push(format!("finalist '{}' is missing the bossing guide", f.title));
+                }
+                if g.mapping.trim().is_empty() {
+                    issues.push(format!("finalist '{}' is missing the mapping guide", f.title));
+                }
+                if g.cost_notes.trim().is_empty() {
+                    issues.push(format!("finalist '{}' is missing cost_notes", f.title));
+                }
+            }
+        }
+    }
+    issues
+}
+
+/// Legacy entry point (Mode B save_finalists) — no pool to persist.
 fn persist_finalists(
     ctx: &Context,
     finalists: &[mossraven_dreamer::Finalist],
+) -> anyhow::Result<std::path::PathBuf> {
+    persist_finalists_v2(ctx, finalists, None)
+}
+
+/// Write finalists to `<data-dir>/finalists/<unix-ts>/`:
+/// `finalists.json` + optional `pool.json` (Tier-5 selection), plus per
+/// finalist: markdown guide, **standalone HTML page** (SPEC §1.1 v2 —
+/// copy-paste into forums/site), the raw PoB XML (from the archive by
+/// variant_id, falling back to decoding the import code), and the
+/// paste-ready import code. A session `index.html` links the set.
+fn persist_finalists_v2(
+    ctx: &Context,
+    finalists: &[mossraven_dreamer::Finalist],
+    pool: Option<&[mossraven_dreamer::PoolCandidate]>,
 ) -> anyhow::Result<std::path::PathBuf> {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1248,25 +1434,37 @@ fn persist_finalists(
 
     // Archive entries by variant_id — authoritative XML for each finalist
     // (import codes are derived FROM these) plus the scored stats the
-    // SPEC §1.1.4 viability gate runs against.
-    let entry_by_variant: std::collections::HashMap<String, (String, mossraven_pob::BuildStats)> =
-        ctx.archive
-            .snapshot()
-            .into_iter()
-            .map(|(_, e)| (e.variant_id, (e.pob_xml, e.stats)))
-            .collect();
+    // SPEC §1.1.4 viability gate runs against, and the §1.1.2 cost stamp.
+    let entry_by_variant: std::collections::HashMap<
+        String,
+        (String, mossraven_pob::BuildStats, f64, String),
+    > = ctx
+        .archive
+        .snapshot()
+        .into_iter()
+        .map(|(_, e)| {
+            (
+                e.variant_id,
+                (e.pob_xml, e.stats, e.estimated_cost_div, e.cost_band),
+            )
+        })
+        .collect();
 
     std::fs::write(
         base.join("finalists.json"),
         serde_json::to_string_pretty(finalists)?,
     )?;
+    if let Some(pool) = pool {
+        std::fs::write(base.join("pool.json"), serde_json::to_string_pretty(pool)?)?;
+    }
 
+    let mut index_rows: Vec<(String, String)> = Vec::new(); // (stem, title)
     for (i, f) in finalists.iter().enumerate() {
         let stem = format!("{:02}-{}", i + 1, slugify(&f.title, 40));
         std::fs::write(base.join(format!("{stem}.pob-code.txt")), &f.pob_import_code)?;
         let entry = entry_by_variant.get(&f.variant_id);
         let xml = entry
-            .map(|(xml, _)| xml.clone())
+            .map(|(xml, ..)| xml.clone())
             .or_else(|| mossraven_archive::decode_pob_import_code(&f.pob_import_code).ok());
         match &xml {
             Some(xml) => std::fs::write(base.join(format!("{stem}.xml")), xml)?,
@@ -1275,14 +1473,170 @@ fn persist_finalists(
                 "finalist XML unavailable (not in archive, import code undecodable)"
             ),
         }
-        let viability = entry.map(|(_, stats)| mossraven_core::viability::check(stats));
+        let viability = entry.map(|(_, stats, ..)| mossraven_core::viability::check(stats));
+        let cost = entry.map(|(_, _, div, band)| (*div, band.clone()));
         std::fs::write(
             base.join(format!("{stem}.md")),
             finalist_markdown(f, viability.as_ref()),
         )?;
+        std::fs::write(
+            base.join(format!("{stem}.html")),
+            finalist_html(f, viability.as_ref(), cost.as_ref()),
+        )?;
+        index_rows.push((stem, f.title.clone()));
     }
-    tracing::info!(dir = %base.display(), count = finalists.len(), "finalists persisted");
+    std::fs::write(base.join("index.html"), index_html(&index_rows, finalists))?;
+    tracing::info!(dir = %base.display(), count = finalists.len(), "finalists persisted (md + html + xml + codes)");
     Ok(base)
+}
+
+/// Minimal HTML escaping for text nodes/attributes.
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// SPEC §1.1 v2 — standalone, copy-paste-ready build page. Inline CSS, zero
+/// external assets, dark theme to match where PoE content gets pasted.
+fn finalist_html(
+    f: &mossraven_dreamer::Finalist,
+    viability: Option<&mossraven_core::viability::ViabilityReport>,
+    cost: Option<&(f64, String)>,
+) -> String {
+    let mut s = String::with_capacity(16_384);
+    let title = esc(&f.title);
+    s.push_str(&format!(
+        "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+         <title>{title}</title></head>\n\
+         <body style=\"margin:0;padding:24px;background:#15171c;color:#d8d4c8;font:15px/1.55 Segoe UI,system-ui,sans-serif\">\n\
+         <div style=\"max-width:860px;margin:0 auto\">\n"
+    ));
+    s.push_str(&format!(
+        "<h1 style=\"color:#e7c976;margin:0 0 4px\">{title}</h1>\n\
+         <p style=\"font-size:17px;color:#b9b4a5;margin:0 0 14px\">{}</p>\n",
+        esc(&f.one_liner)
+    ));
+    // tags + cell + viability + cost chips
+    s.push_str("<p style=\"margin:0 0 18px\">");
+    for t in &f.tags {
+        s.push_str(&format!(
+            "<span style=\"display:inline-block;background:#262a33;border-radius:10px;padding:2px 10px;margin:0 6px 6px 0;font-size:12px\">{}</span>",
+            esc(t)
+        ));
+    }
+    if let Some(v) = viability {
+        let (bg, label) = if v.pass {
+            ("#1f4d2e", "VIABILITY: PASS".to_string())
+        } else {
+            ("#5a2727", format!("VIABILITY: FAIL — {}", v.dps_band))
+        };
+        s.push_str(&format!(
+            "<span style=\"display:inline-block;background:{bg};border-radius:10px;padding:2px 10px;margin:0 6px 6px 0;font-size:12px\">{}</span>",
+            esc(&label)
+        ));
+    }
+    if let Some((div, band)) = cost {
+        s.push_str(&format!(
+            "<span style=\"display:inline-block;background:#3d3322;border-radius:10px;padding:2px 10px;margin:0 6px 6px 0;font-size:12px\">COST ≈ {div:.0} div — {}</span>",
+            esc(band)
+        ));
+    }
+    s.push_str("</p>\n");
+    // key stats
+    if !f.key_stats.is_empty() {
+        s.push_str("<table style=\"border-collapse:collapse;margin:0 0 18px\">");
+        for ks in &f.key_stats {
+            s.push_str(&format!(
+                "<tr><td style=\"padding:3px 18px 3px 0;color:#8f8a7d\">{}</td><td style=\"padding:3px 0;font-weight:600\">{}</td></tr>",
+                esc(&ks.label),
+                esc(&ks.value)
+            ));
+        }
+        s.push_str("</table>\n");
+    }
+    let section = |s: &mut String, head: &str, body: &str| {
+        if !body.trim().is_empty() {
+            s.push_str(&format!(
+                "<h2 style=\"color:#e7c976;font-size:19px;margin:22px 0 6px\">{}</h2>\n<p style=\"margin:0;white-space:pre-wrap\">{}</p>\n",
+                esc(head),
+                esc(body)
+            ));
+        }
+    };
+    section(&mut s, "Why it works", &f.why_it_works);
+    if let Some(v) = viability {
+        if !v.failures.is_empty() {
+            section(
+                &mut s,
+                "Viability caveats (verbatim)",
+                &v.failures.join("\n"),
+            );
+        }
+    }
+    if let Some(g) = &f.guide {
+        if !g.checkpoints.is_empty() {
+            s.push_str("<h2 style=\"color:#e7c976;font-size:19px;margin:22px 0 6px\">Leveling — 5 checkpoints</h2>\n");
+            for cp in &g.checkpoints {
+                s.push_str(&format!(
+                    "<div style=\"background:#1b1e25;border-left:3px solid #e7c976;border-radius:0 8px 8px 0;padding:10px 14px;margin:0 0 10px\">\
+                     <div style=\"font-weight:600;margin-bottom:4px\">{} <span style=\"color:#8f8a7d;font-weight:400\">(lvl {})</span></div>\
+                     <div><span style=\"color:#8f8a7d\">Gems:</span> {}</div>\
+                     <div><span style=\"color:#8f8a7d\">Passives:</span> {}</div>\
+                     <div><span style=\"color:#8f8a7d\">Gear:</span> {}</div></div>\n",
+                    esc(&cp.name),
+                    esc(&cp.levels),
+                    esc(&cp.gems),
+                    esc(&cp.passives),
+                    esc(&cp.gear)
+                ));
+            }
+        }
+        section(&mut s, "Leveling summary", &g.leveling);
+        section(&mut s, "Endgame plan", &g.endgame);
+        section(&mut s, "Bossing guide", &g.bossing);
+        section(&mut s, "Clearing / mapping guide", &g.mapping);
+        section(&mut s, "Clear vs. boss loadout swap", &g.loadout_swap);
+        section(&mut s, "Cost & value", &g.cost_notes);
+        if let Some(p) = &g.playtest_notes {
+            section(&mut s, "Playtest notes (what PoB can't model)", p);
+        }
+    }
+    if !f.pob_import_code.is_empty() {
+        s.push_str(&format!(
+            "<h2 style=\"color:#e7c976;font-size:19px;margin:22px 0 6px\">PoB2 import code</h2>\n\
+             <textarea readonly style=\"width:100%;height:90px;background:#0f1115;color:#9aa0ab;border:1px solid #2a2e38;border-radius:8px;padding:8px;font:12px Consolas,monospace\" onclick=\"this.select()\">{}</textarea>\n",
+            esc(&f.pob_import_code)
+        ));
+    }
+    s.push_str(
+        "<p style=\"color:#5d594f;font-size:12px;margin-top:26px\">Generated by MossRaven — \
+         PoB-scored, viability-gated. Stats are Path of Building calculations, not gameplay claims.</p>\n\
+         </div></body></html>\n",
+    );
+    s
+}
+
+/// Session index page linking the five build pages.
+fn index_html(rows: &[(String, String)], finalists: &[mossraven_dreamer::Finalist]) -> String {
+    let mut s = String::from(
+        "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>MossRaven finalists</title></head>\n\
+         <body style=\"margin:0;padding:24px;background:#15171c;color:#d8d4c8;font:15px/1.55 Segoe UI,system-ui,sans-serif\">\n\
+         <div style=\"max-width:860px;margin:0 auto\">\n\
+         <h1 style=\"color:#e7c976\">MossRaven — curated builds</h1>\n<ol style=\"padding-left:20px\">\n",
+    );
+    for ((stem, title), f) in rows.iter().zip(finalists) {
+        s.push_str(&format!(
+            "<li style=\"margin:0 0 10px\"><a href=\"{stem}.html\" style=\"color:#e7c976;font-weight:600\">{}</a><br>\
+             <span style=\"color:#b9b4a5\">{}</span></li>\n",
+            esc(title),
+            esc(&f.one_liner)
+        ));
+    }
+    s.push_str("</ol></div></body></html>\n");
+    s
 }
 
 /// Lowercase alnum-dash slug used for finalist file stems, capped at `max` chars.
@@ -1346,12 +1700,30 @@ fn finalist_markdown(
     md.push_str(&format!("## Why it works\n\n{}\n\n", f.why_it_works));
     match &f.guide {
         Some(g) => {
-            md.push_str(&format!("## Leveling\n\n{}\n\n", g.leveling));
+            if !g.checkpoints.is_empty() {
+                md.push_str("## Leveling — 5 checkpoints (SPEC §1.1 v2)\n\n");
+                for cp in &g.checkpoints {
+                    md.push_str(&format!(
+                        "### {} (lvl {})\n\n- **Gems:** {}\n- **Passives:** {}\n- **Gear:** {}\n\n",
+                        cp.name, cp.levels, cp.gems, cp.passives, cp.gear
+                    ));
+                }
+            }
+            md.push_str(&format!("## Leveling summary\n\n{}\n\n", g.leveling));
             md.push_str(&format!("## Endgame\n\n{}\n\n", g.endgame));
+            if !g.bossing.trim().is_empty() {
+                md.push_str(&format!("## Bossing guide\n\n{}\n\n", g.bossing));
+            }
+            if !g.mapping.trim().is_empty() {
+                md.push_str(&format!("## Clearing / mapping guide\n\n{}\n\n", g.mapping));
+            }
             md.push_str(&format!(
                 "## Clear / boss loadout swap\n\n{}\n\n",
                 g.loadout_swap
             ));
+            if !g.cost_notes.trim().is_empty() {
+                md.push_str(&format!("## Cost & value (SPEC §1.1.2)\n\n{}\n\n", g.cost_notes));
+            }
             if let Some(p) = &g.playtest_notes {
                 md.push_str(&format!("## Playtest notes\n\n{}\n\n", p));
             }

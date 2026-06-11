@@ -220,6 +220,12 @@ pub struct ArchiveEntry {
     pub origin_hypothesis: Option<String>,
     /// PoB2 version + game-data version for staleness detection.
     pub data_version: String,
+    /// SPEC §1.1.2 heuristic gear-cost estimate (divines). Serde-defaulted:
+    /// pre-cost entries read as 0.0 / "" until rescored.
+    #[serde(default)]
+    pub estimated_cost_div: f64,
+    #[serde(default)]
+    pub cost_band: String,
 }
 
 #[derive(Default)]
@@ -581,6 +587,8 @@ mod label_tests {
             stats: BuildStats { total_dps: dps, ..Default::default() },
             origin_hypothesis: None,
             data_version: "test".into(),
+            estimated_cost_div: 0.0,
+            cost_band: String::new(),
         };
         // Two fuzz labels that BOTH canonicalize to physical/es/boss/support,
         // plus one schema echo. Written raw, bypassing normalization.
@@ -624,6 +632,8 @@ mod sync_tests {
             stats: BuildStats { total_dps: dps, ..Default::default() },
             origin_hypothesis: None,
             data_version: "test".into(),
+            estimated_cost_div: 0.0,
+            cost_band: String::new(),
         }
     }
 

@@ -25,6 +25,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tier3::Tier3Backend;
 
+pub mod cost;
 pub mod mutate;
 pub mod viability;
 
@@ -688,12 +689,15 @@ impl SearchEngine {
                     let damage_truth = mossraven_surrogate::find_main_skill_gem_name(&proposal.pob_xml)
                         .and_then(|g| self.gem_db.get(&g).and_then(|i| i.damage_type()));
                     let coords = coords_from_stats(&stats, hint, damage_truth);
+                    let cost_est = cost::estimate_cost(&proposal.pob_xml);
                     let entry = ArchiveEntry {
                         variant_id: id.clone(),
                         pob_xml: proposal.pob_xml.clone(),
                         stats,
                         origin_hypothesis: proposal.origin_hypothesis.clone(),
                         data_version: cfg.data_version.clone(),
+                        estimated_cost_div: cost_est.total_div,
+                        cost_band: cost_est.band.to_string(),
                     };
                     if self.archive.try_place(coords, entry) {
                         cells_placed += 1;

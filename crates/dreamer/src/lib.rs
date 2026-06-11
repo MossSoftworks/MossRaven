@@ -99,13 +99,32 @@ pub struct KeyStat {
     pub value: String,
 }
 
+/// One leveling checkpoint (SPEC §1.1 v2 — 5 per finalist).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CheckpointGuide {
+    /// e.g. "CP1 — Acts 1–2"
+    #[serde(default)]
+    pub name: String,
+    /// e.g. "1–25"
+    #[serde(default)]
+    pub levels: String,
+    /// Which skills/supports to run at this point.
+    #[serde(default)]
+    pub gems: String,
+    /// Passive priorities at this point.
+    #[serde(default)]
+    pub passives: String,
+    /// What gear to look for at this point.
+    #[serde(default)]
+    pub gear: String,
+}
+
 /// SPEC §1.1 build guide — what makes a finalist *playable*, not just scored.
-/// All fields are prose written by Tier 5. Serde-defaulted so pre-guide
+/// All fields are prose written by Tier 6. Serde-defaulted so pre-guide
 /// finalist JSON (and conservative models) still parse.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BuildGuide {
-    /// Leveling path: act milestones, which skills to run early, gem/passive
-    /// order, and what to respec out of (and when) on the way to the final build.
+    /// Leveling path SUMMARY (the 5 checkpoints carry the detail).
     #[serde(default)]
     pub leveling: String,
     /// Endgame plan: final tree direction, gear priorities, key breakpoints
@@ -123,6 +142,38 @@ pub struct BuildGuide {
     /// playtesting.
     #[serde(default)]
     pub playtest_notes: Option<String>,
+    /// SPEC §1.1 v2: exactly 5 leveling checkpoints (CP1 Acts 1–2 … CP5
+    /// pinnacle-ready).
+    #[serde(default)]
+    pub checkpoints: Vec<CheckpointGuide>,
+    /// Bossing guide: single-target loadout, defensive swaps, what kills this
+    /// build and what to do about it.
+    #[serde(default)]
+    pub bossing: String,
+    /// Clearing/mapping guide: clear loadout, pack handling, map mods this
+    /// build cannot run.
+    #[serde(default)]
+    pub mapping: String,
+    /// SPEC §1.1.2 value notes: cost reality, cheapest acceptable variant,
+    /// what the expensive pieces buy you.
+    #[serde(default)]
+    pub cost_notes: String,
+}
+
+/// Tier-5 selection-pool candidate (SPEC §1.1.3): a nomination, not a guide.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolCandidate {
+    pub variant_id: String,
+    pub title: String,
+    /// One-sentence pitch.
+    pub pitch: String,
+    /// Why this deserves a curation slot (2–3 sentences max).
+    #[serde(default)]
+    pub rationale: String,
+    #[serde(default)]
+    pub cell: String,
+    #[serde(default)]
+    pub cost_band: String,
 }
 
 #[async_trait]
@@ -136,11 +187,40 @@ pub trait TierOneDriver: Send + Sync {
     /// entries by Tier 4) and produce 5–10 curated, narrated finalists for the
     /// UI's "play these" panel. Default impl returns NotImplemented so existing
     /// drivers (ExternalMcpDriver, future test fakes) don't have to provide it.
+    /// Legacy single-stage path; the v2 pipeline is select_pool → write_finalists.
     async fn synthesize_finalists(
         &self,
         _frontier_snapshot: &Value,
     ) -> Result<Vec<Finalist>, DreamerError> {
         Err(DreamerError::NotImplemented)
+    }
+    /// Tier 5 (SPEC §1.1.3) — SELECT a pool of 15–20 candidates from the
+    /// frontier. Breadth, not prose: one-line pitches only.
+    async fn select_pool(
+        &self,
+        _frontier_snapshot: &Value,
+    ) -> Result<Vec<PoolCandidate>, DreamerError> {
+        Err(DreamerError::NotImplemented)
+    }
+    /// Tier 6 (SPEC §1.1.3) — CURATE exactly 5 from the pool and WRITE the
+    /// full guide set per pick (5 checkpoints, bossing, mapping, cost notes).
+    async fn write_finalists(
+        &self,
+        _pool: &[PoolCandidate],
+        _frontier_snapshot: &Value,
+    ) -> Result<Vec<Finalist>, DreamerError> {
+        Err(DreamerError::NotImplemented)
+    }
+    /// §3.6 adversarial critic — review a stage's draft against ground truth.
+    /// Returns (ok, issues). Default: always-ok (drivers without a critic
+    /// never block the pipeline).
+    async fn review(
+        &self,
+        _stage: &str,
+        _draft: &Value,
+        _ground_truth: &Value,
+    ) -> Result<(bool, Vec<String>), DreamerError> {
+        Ok((true, Vec::new()))
     }
 }
 
@@ -301,6 +381,104 @@ mod prompts {
         );
         (system, user)
     }
+
+    /// Tier 5 v2 — SELECT a pool, don't write guides.
+    pub fn select_pool(frontier_snapshot: &Value) -> (&'static str, String) {
+        let system = "You are a Path of Exile 2 build SELECTOR (Tier 5 of a discovery \
+                      pipeline). The engine produced a frontier of mechanically-scored \
+                      builds. NOMINATE a pool of 15–20 candidates worth a curator's \
+                      attention. You are NOT writing guides — one-line pitches only. \
+                      \n\nOutput ONLY valid JSON. No prose, no markdown fences. \
+                      Rules: variant_id and cell are COPIED from frontier entries, never \
+                      invented. Span COST BANDS (budget picks matter as much as ceiling \
+                      picks), playstyles, and damage types where the frontier allows. \
+                      If the frontier has fewer distinct builds than 15, nominate every \
+                      genuinely distinct one ONCE — do not pad with duplicates. NEVER \
+                      echo pob_import_code.";
+        let user = format!(
+            "Frontier:\n{}\n\n\
+             Return JSON of shape:\n\
+             {{\n  \"pool\": [\n    {{\n      \"variant_id\": \"<copy>\",\n      \"title\": \"short name\",\n      \"pitch\": \"one sentence — why a player would care\",\n      \"rationale\": \"2–3 sentences max — why this earns a curation slot (power, value, novelty)\",\n      \"cell\": \"<copy>\",\n      \"cost_band\": \"<copy estimated cost band from the entry>\"\n    }}\n  ]\n}}",
+            serde_json::to_string_pretty(frontier_snapshot).unwrap_or_default(),
+        );
+        (system, user)
+    }
+
+    /// Tier 6 v2 — CURATE 5 from the pool and WRITE the full SPEC §1.1 guides.
+    pub fn write_finalists(pool: &[super::PoolCandidate], frontier_snapshot: &Value) -> (&'static str, String) {
+        let system = "You are a Path of Exile 2 build CURATOR-AUTHOR (Tier 6). From the \
+                      selection pool, pick EXACTLY 5 builds and write their complete \
+                      guides. \
+                      \n\nCuration criteria, in order: (1) all-content viability honesty — \
+                      quote the viability verdict, never oversell a FAIL; (2) VALUE — \
+                      effectiveness per divine. Giving up 1M DPS on a 10M-DPS build to \
+                      save 90% of the cost is a WIN; say so when it applies, and prefer a \
+                      cost SPREAD across the five (at least one budget pick when the pool \
+                      has one); (3) playstyle + damage-type diversity — no two finalists \
+                      that play the same. \
+                      \n\nOutput ONLY valid JSON. No markdown fences. variant_id/cell are \
+                      COPIED from the pool/frontier. NEVER echo pob_import_code. \
+                      \n\nEvery finalist carries a guide with: `checkpoints` — EXACTLY 5 \
+                      leveling waypoints (CP1 Acts 1–2 lvl 1–25, CP2 Act 3 + Cruel entry \
+                      25–45, CP3 Cruel done / maps entry 45–65, CP4 early maps + \
+                      ascendancy 65–85, CP5 pinnacle-ready 85+), each naming the gems to \
+                      run, passives to prioritize, and gear to look for AT THAT POINT; \
+                      `bossing` — single-target loadout, defensive swaps, what kills this \
+                      build and the counterplay; `mapping` — clear loadout, pack handling, \
+                      map mods this build cannot run; `cost_notes` — cost reality, the \
+                      cheapest acceptable variant, what the expensive pieces buy; plus the \
+                      existing `leveling` (summary), `endgame`, `loadout_swap` (weapon-set \
+                      duality or an explicit can't-dual-loadout statement), and \
+                      `playtest_notes` (what PoB can't model — never claim it's fun).";
+        let pool_json = serde_json::to_string_pretty(pool).unwrap_or_default();
+        let user = format!(
+            "Selection pool (Tier 5 output):\n{pool_json}\n\n\
+             Frontier ground truth (stats / viability / cost per variant_id):\n{}\n\n\
+             Return JSON of shape:\n\
+             {{\n  \"finalists\": [\n    {{\n      \"variant_id\": \"<from pool>\",\n      \"title\": \"...\",\n      \"one_liner\": \"...\",\n      \"why_it_works\": \"...\",\n      \"tags\": [\"...\"],\n      \"cell\": \"<copy>\",\n      \"key_stats\": [{{\"label\": \"DPS\", \"value\": \"...\"}}, {{\"label\": \"EHP\", \"value\": \"...\"}}, {{\"label\": \"Cost\", \"value\": \"<band>\"}}],\n      \"guide\": {{\n        \"leveling\": \"summary\",\n        \"endgame\": \"...\",\n        \"loadout_swap\": \"...\",\n        \"playtest_notes\": \"...\",\n        \"checkpoints\": [\n          {{\"name\": \"CP1 — Acts 1–2\", \"levels\": \"1–25\", \"gems\": \"...\", \"passives\": \"...\", \"gear\": \"...\"}},\n          {{\"name\": \"CP2 — Act 3 + Cruel entry\", \"levels\": \"25–45\", \"gems\": \"...\", \"passives\": \"...\", \"gear\": \"...\"}},\n          {{\"name\": \"CP3 — Maps entry\", \"levels\": \"45–65\", \"gems\": \"...\", \"passives\": \"...\", \"gear\": \"...\"}},\n          {{\"name\": \"CP4 — Early maps + ascendancy\", \"levels\": \"65–85\", \"gems\": \"...\", \"passives\": \"...\", \"gear\": \"...\"}},\n          {{\"name\": \"CP5 — Pinnacle-ready\", \"levels\": \"85+\", \"gems\": \"...\", \"passives\": \"...\", \"gear\": \"...\"}}\n        ],\n        \"bossing\": \"...\",\n        \"mapping\": \"...\",\n        \"cost_notes\": \"...\"\n      }}\n    }}\n  ]\n}}",
+            serde_json::to_string_pretty(frontier_snapshot).unwrap_or_default(),
+        );
+        (system, user)
+    }
+
+    /// §3.6 adversarial critic — stage-generic refutation prompt.
+    pub fn critique(stage: &str, draft: &Value, ground_truth: &Value) -> (String, String) {
+        let system = format!(
+            "You are an adversarial REVIEWER for stage '{stage}' of a PoE2 build pipeline. \
+             Your job is to REFUTE: find CONCRETE, CHECKABLE errors in the draft against \
+             the ground truth — wrong variant_ids, stats/cost/viability claims that \
+             contradict the data, missing required fields, duplicate picks, named \
+             skills/items that don't appear anywhere in the ground truth. \
+             Do NOT raise style opinions or hypothetical concerns. \
+             If you find no concrete error, say ok=true. \
+             Output ONLY JSON: {{\"ok\": true|false, \"issues\": [\"specific error 1\", ...]}}"
+        );
+        let user = format!(
+            "GROUND TRUTH:\n{}\n\nDRAFT ({stage}):\n{}\n\nReturn the verdict JSON.",
+            serde_json::to_string_pretty(ground_truth).unwrap_or_default(),
+            serde_json::to_string_pretty(draft).unwrap_or_default(),
+        );
+        (system, user)
+    }
+
+    /// One revision pass: original task + draft + the critic's issues.
+    pub fn revise(original_system: &str, original_user: &str, draft: &Value, issues: &[String]) -> (String, String) {
+        let system = format!(
+            "{original_system}\n\nThis is a REVISION pass: your previous draft was \
+             reviewed and concrete issues were found. Fix EXACTLY the listed issues, \
+             change nothing else, and return the SAME JSON shape."
+        );
+        let user = format!(
+            "{original_user}\n\nYOUR PREVIOUS DRAFT:\n{}\n\nISSUES TO FIX:\n{}",
+            serde_json::to_string_pretty(draft).unwrap_or_default(),
+            issues
+                .iter()
+                .map(|i| format!("- {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        (system, user)
+    }
 }
 
 #[async_trait]
@@ -338,6 +516,39 @@ impl TierOneDriver for AnthropicApiDriver {
         let raw = me.message(system, &user).await?;
         parse_finalists(&raw)
     }
+
+    async fn select_pool(
+        &self,
+        frontier_snapshot: &Value,
+    ) -> Result<Vec<PoolCandidate>, DreamerError> {
+        let me = self.clone_with_max_tokens(8192);
+        let (system, user) = prompts::select_pool(frontier_snapshot);
+        let raw = me.message(system, &user).await?;
+        parse_pool(&raw)
+    }
+
+    async fn write_finalists(
+        &self,
+        pool: &[PoolCandidate],
+        frontier_snapshot: &Value,
+    ) -> Result<Vec<Finalist>, DreamerError> {
+        let me = self.clone_with_max_tokens(16_384);
+        let (system, user) = prompts::write_finalists(pool, frontier_snapshot);
+        let raw = me.message(system, &user).await?;
+        parse_finalists(&raw)
+    }
+
+    async fn review(
+        &self,
+        stage: &str,
+        draft: &Value,
+        ground_truth: &Value,
+    ) -> Result<(bool, Vec<String>), DreamerError> {
+        let me = self.clone_with_max_tokens(2_048);
+        let (system, user) = prompts::critique(stage, draft, ground_truth);
+        let raw = me.message(&system, &user).await?;
+        Ok(parse_verdict(&raw))
+    }
 }
 
 impl AnthropicApiDriver {
@@ -355,9 +566,8 @@ impl AnthropicApiDriver {
 
 }
 
-/// Shared response parser: pull `{"finalists": [...]}` out of a raw model
-/// reply, tolerating markdown fences and prose preambles.
-fn parse_finalists(raw: &str) -> Result<Vec<Finalist>, DreamerError> {
+/// Strip markdown fences / prose preamble and parse the first JSON object.
+fn parse_json_object(raw: &str) -> Result<Value, DreamerError> {
     let trimmed = raw.trim();
     let inner = trimmed
         .strip_prefix("```json")
@@ -365,17 +575,22 @@ fn parse_finalists(raw: &str) -> Result<Vec<Finalist>, DreamerError> {
         .map(|s| s.trim_start_matches('\n'))
         .and_then(|s| s.rsplit_once("```").map(|(a, _)| a))
         .unwrap_or(trimmed);
-    let v: Value = match serde_json::from_str(inner) {
-        Ok(v) => v,
+    match serde_json::from_str(inner) {
+        Ok(v) => Ok(v),
         Err(_) => {
             let start = inner.find('{').ok_or_else(|| {
                 DreamerError::Schema(format!("no JSON object in response: {raw}"))
             })?;
-            serde_json::from_str(&inner[start..]).map_err(|e| {
-                DreamerError::Schema(format!("JSON parse failed: {e} — {raw}"))
-            })?
+            serde_json::from_str(&inner[start..])
+                .map_err(|e| DreamerError::Schema(format!("JSON parse failed: {e} — {raw}")))
         }
-    };
+    }
+}
+
+/// Shared response parser: pull `{"finalists": [...]}` out of a raw model
+/// reply, tolerating markdown fences and prose preambles.
+fn parse_finalists(raw: &str) -> Result<Vec<Finalist>, DreamerError> {
+    let v = parse_json_object(raw)?;
     let arr = v
         .get("finalists")
         .and_then(|f| f.as_array())
@@ -387,6 +602,43 @@ fn parse_finalists(raw: &str) -> Result<Vec<Finalist>, DreamerError> {
         out.push(f);
     }
     Ok(out)
+}
+
+/// Pull `{"pool": [...]}` out of a Tier-5 selection reply.
+fn parse_pool(raw: &str) -> Result<Vec<PoolCandidate>, DreamerError> {
+    let v = parse_json_object(raw)?;
+    let arr = v
+        .get("pool")
+        .and_then(|f| f.as_array())
+        .ok_or_else(|| DreamerError::Schema(format!("no `pool` array: {v}")))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for entry in arr {
+        let c: PoolCandidate = serde_json::from_value(entry.clone())
+            .map_err(|e| DreamerError::Schema(format!("pool candidate parse failed: {e}")))?;
+        out.push(c);
+    }
+    Ok(out)
+}
+
+/// Pull `{"ok": bool, "issues": [...]}` out of a critic reply. An unparsable
+/// critic verdict reads as OK — the adversary must never break the pipeline.
+fn parse_verdict(raw: &str) -> (bool, Vec<String>) {
+    match parse_json_object(raw) {
+        Ok(v) => {
+            let ok = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(true);
+            let issues = v
+                .get("issues")
+                .and_then(|i| i.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (ok, issues)
+        }
+        Err(_) => (true, Vec::new()),
+    }
 }
 
 /// Tier-1/Tier-5 driver for any OpenAI-compatible chat endpoint (Google AI
@@ -514,6 +766,38 @@ impl TierOneDriver for OpenAiCompatDriver {
         let raw = self.message_with_max(system, &user, 24_576).await?;
         parse_finalists(&raw)
     }
+
+    async fn select_pool(
+        &self,
+        frontier_snapshot: &Value,
+    ) -> Result<Vec<PoolCandidate>, DreamerError> {
+        let (system, user) = prompts::select_pool(frontier_snapshot);
+        let raw = self.message_with_max(system, &user, 8_192).await?;
+        parse_pool(&raw)
+    }
+
+    async fn write_finalists(
+        &self,
+        pool: &[PoolCandidate],
+        frontier_snapshot: &Value,
+    ) -> Result<Vec<Finalist>, DreamerError> {
+        let (system, user) = prompts::write_finalists(pool, frontier_snapshot);
+        // 5 finalists × (5 checkpoints + bossing + mapping + cost) ≈ 8–12K
+        // output tokens; 24K gives headroom.
+        let raw = self.message_with_max(system, &user, 24_576).await?;
+        parse_finalists(&raw)
+    }
+
+    async fn review(
+        &self,
+        stage: &str,
+        draft: &Value,
+        ground_truth: &Value,
+    ) -> Result<(bool, Vec<String>), DreamerError> {
+        let (system, user) = prompts::critique(stage, draft, ground_truth);
+        let raw = self.message_with_max(&system, &user, 2_048).await?;
+        Ok(parse_verdict(&raw))
+    }
 }
 
 /// Mode B marker driver. Returns `DriverIsExternal` for every call — Mode B
@@ -539,6 +823,19 @@ impl TierOneDriver for ExternalMcpDriver {
     /// (see ServiceControlSurface::synthesize_finalists in mossraven-service).
     async fn synthesize_finalists(
         &self,
+        _frontier_snapshot: &Value,
+    ) -> Result<Vec<Finalist>, DreamerError> {
+        Err(DreamerError::DriverIsExternal)
+    }
+    async fn select_pool(
+        &self,
+        _frontier_snapshot: &Value,
+    ) -> Result<Vec<PoolCandidate>, DreamerError> {
+        Err(DreamerError::DriverIsExternal)
+    }
+    async fn write_finalists(
+        &self,
+        _pool: &[PoolCandidate],
         _frontier_snapshot: &Value,
     ) -> Result<Vec<Finalist>, DreamerError> {
         Err(DreamerError::DriverIsExternal)
