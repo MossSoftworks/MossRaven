@@ -14,14 +14,47 @@ Distribution target: **single Windows app any POE2 player can install** and run 
 
 No OpenAI dependency anywhere.
 
-### 1.1 End state — definition of done (v1)
+### 1.1 End state — definition of done (v2, 2026-06-11)
 
-A completed discovery session delivers **5–10 recommended builds**. Each finalist ships:
+A completed discovery session delivers **exactly 5 curated builds**, chosen by
+Tier 6 from a Tier-5 **selection pool of 15–20 candidates** (§3.1a separates
+selection from authorship). Each curated build ships:
 
-1. **Current-patch PoB2 XML** — importable into desktop PoB2, generated against the vendored PoB2 version and version-stamped. "Current" is a living requirement: keep `vendor/PathOfBuilding-PoE2` tracking the live game.
-2. **Build guide** — leveling path (act milestones, gem/passive order) and endgame plan (final tree, gear priorities, breakpoints).
-3. **Dual-loadout design for clear vs. boss** — one character, minimal switching friction. Prefer PoE2's weapon-set swap (PoB2 XML already encodes it: `<ItemSet useSecondWeaponSet=…>` plus weapon-set passive points); the finalist XML carries both loadouts. If a build can't dual-loadout cleanly, its guide must say so explicitly.
-4. **All-content viability** — every recommended build must be able to **easily and cleanly clear all current content** (campaign through endgame bosses/pinnacles). The engine enforces this with a **viability gate**: hard floors on DPS, effective HP pool, and resistances (§1.1.1) checked against PoB's scored stats. A finalist failing the gate is never silently presented as endgame-ready — it ships with an explicit `viability: FAIL` flag and the verbatim failure list. Floors are league-currency: revisit each patch.
+1. **Current-patch PoB2 XML + import code** — importable into desktop PoB2,
+   generated against the vendored PoB2 version and version-stamped. "Current"
+   is a living requirement: keep `vendor/PathOfBuilding-PoE2` tracking the
+   live game, and run `rescore_archive` after every vendor pull.
+2. **Build + leveling guide with 5 checkpoints** — fixed waypoints, each with
+   the gems to run, passives to take, and gear to look for at that point:
+   - **CP1** Acts 1–2 (≈ lvl 1–25)
+   - **CP2** Act 3 + Cruel entry (≈ 25–45)
+   - **CP3** Cruel done / maps entry (≈ 45–65)
+   - **CP4** Early maps + ascendancy complete (≈ 65–85)
+   - **CP5** Pinnacle-ready endgame (≈ 85+, the shipped PoB XML)
+3. **Bossing guide** — single-target loadout, defensive swaps, fight-specific
+   notes (what kills this build and what to do about it).
+4. **Clearing/mapping guide** — clear-speed loadout, pack-handling pattern,
+   map-mod warnings (mods this build cannot run).
+5. **Dual-loadout design for clear vs. boss** — one character, minimal
+   switching friction via PoE2's weapon-set swap (PoB2 XML already encodes
+   it); the finalist XML carries both loadouts. If a build can't dual-loadout
+   cleanly, its guide must say so explicitly.
+6. **All-content viability** — hard floors on PoB-scored stats (§1.1.1) plus
+   **passive-point legality** (PoB-sourced budget accounting; over-budget
+   trees are unbuildable in-game and never ship). A finalist failing the gate
+   is never silently presented as endgame-ready — explicit `viability: FAIL`
+   plus the verbatim failure list. Floors are league-currency: revisit each
+   patch.
+7. **Cost estimate + value notes** — estimated gear cost (band + breakdown,
+   §1.1.2) surfaced on the build card and in the guide, with explicit value
+   tradeoffs. Rule the curator must apply: **giving up 1M DPS on a 10M build
+   to save 90% of the cost is a WIN** — effectiveness-per-divine beats raw
+   ceiling for most players. Budget variants get called out where they exist.
+
+**Output formats per build:** PoB import code (`.txt`), PoB XML (`.xml`),
+markdown guide (`.md`), and a **copy-paste-ready standalone HTML page**
+(`.html`, inline CSS, zero external assets) suitable for pasting into
+forums or a site. A session-level `index.html` links all five.
 
 #### 1.1.1 Viability floors (v1 — PoE2 0.5 "Runes of Aldur")
 
@@ -39,15 +72,53 @@ and the achieved band is always reported alongside pass/fail.
 
 The gate is **reported, not filtering, in v1** — failing cells stay in the
 archive (a failing cell is still discovery signal), but the frontier API and
-every Tier-5 guide must surface pass/fail + failures.
+every guide must surface pass/fail + failures. Exception: **passive-point
+legality IS filtering** — the engine refuses to archive over-budget trees
+(PoB scores them happily; an evolutionary loop would inflate forever).
 
-Status (2026-06-10): nothing generated yet — `crates/pob/tests/fixtures/*.xml` are hand-collected *inputs* (parity/seeds), not outputs. The loop has not yet produced an archive or Tier-5 finalists.
+#### 1.1.2 Cost layer (v1 — heuristic bands)
+
+Where cost lives in the pipeline (decided 2026-06-11):
+
+1. **Estimated at scoring time** (Tier 3 adjacency) — a pure function of the
+   build XML: uniques classed into price bands, rares banded by mod density,
+   summed into `estimated_cost_div` + `cost_band` ∈
+   {budget ≤ 5 div · mid ≤ 30 · expensive ≤ 150 · mirror-tier > 150}.
+   Stamped on every `ArchiveEntry`.
+2. **Surfaced everywhere** — frontier JSON, viability report, build cards,
+   guides.
+3. **Curated on at Tier 6** — the value rule (§1.1 item 7) is an explicit
+   curation criterion: the 5 finalists should span cost bands when the pool
+   allows, and every guide writes its cost reality plus the cheapest
+   acceptable variant.
+
+v1 prices are HEURISTIC (no live market). Follow-up: poe.ninja PoE2 economy
+API as an env-gated live source; heuristic stays as offline fallback.
+
+#### 1.1.3 Tier-6 curation (selection ≠ authorship)
+
+Tier 5 SELECTS a pool: 15–20 candidates from the frontier, each a one-line
+pitch + stats + cost — cheap tokens, breadth over depth. Tier 6 CURATES and
+WRITES: picks exactly 5 balancing power, cost spread, playstyle diversity,
+and viability honesty, then writes the full §1.1 guide set per pick. Both
+tiers run on the same Tier-1/5 driver chain (Anthropic or OpenAI-compat).
+Adversarial critique (§3.6) wraps both stages.
+
+Status (2026-06-11): the loop produces archives + finalists end-to-end (live
+runs 1781112410 → 1781127587). Tier-6 split, cost layer, HTML output, and
+adversarial critics are the active build-out.
 
 Tracked implications:
 
-- Tier-5 synthesis must emit guide prose (leveling + endgame + swap notes), not just stats and an import code.
-- Variant representation and mutation operators must become weapon-set aware, so clear/boss duality is *searched*, not bolted on afterwards.
-- The viability gate needs richer inputs over time (sustain, ailment immunity, movement) — v1's four floors are the deliberately-blunt start.
+- Tier-5/6 synthesis must emit guide prose per §1.1 (checkpoints, bossing,
+  mapping), not just stats and an import code.
+- Variant representation and mutation operators must become weapon-set aware,
+  so clear/boss duality is *searched*, not bolted on afterwards. (DONE:
+  SetActiveWeaponSet op + weapon-set walls in tree pathing.)
+- The viability gate needs richer inputs over time (sustain, ailment
+  immunity, movement) — v1's floors are the deliberately-blunt start.
+- Guides are only as honest as their fact-checking — §3.6 adversarial pass
+  is mandatory for shipped finalists.
 
 ---
 
@@ -84,12 +155,29 @@ Tier 3 — THE JUDGE                         [100k+ evals / session]
    Backend swappable (see §4.3): `local` (in-process, host cores)
                               OR `remote` (POSTs to mossraven-node URL).
         │
-MAP-Elites ARCHIVE  ← THE OUTPUT
+MAP-Elites ARCHIVE  ← THE SEARCH OUTPUT
    Grid keyed on archetype axes (damage type × defense layer ×
    clear/boss × scaling vector). Each cell = best build of that type;
    empty cell = undiscovered niche. Persisted to disk; resumes across
    sessions; readable by Tier 1.
+        │
+Tier 4 — THE PRUNE                          [post-sim gates]
+   Mechanical legality + viability: passive point budget (filtering),
+   stat floors (reported), label normalization. No LLM.
+        │
+Tier 5 — THE SELECTOR                       [a few calls / session]
+   Reads the frontier, nominates a POOL of 15–20 candidates
+   (one-line pitch + stats + cost each). Breadth, not prose.
+        │
+Tier 6 — THE CURATOR-AUTHOR                 [a few quality calls / session]
+   Picks exactly 5 from the pool (power × cost spread × playstyle
+   diversity × viability honesty), then writes the full guide set
+   per pick (§1.1: 5 checkpoints, bossing, mapping, cost/value).
+   Outputs: pool.json, finalists.json, .md + .html + .xml + import code.
 ```
+
+Every LLM-bearing tier (1, 2, 5, 6) is wrapped by an **adversarial critic
+pass** (§3.6).
 
 ### 3.2 Why the tiers split this way
 
@@ -107,6 +195,26 @@ seed concept (Tier 1)
 ```
 
 Prompt sampler feeds Tier 1 **diverse sub-optimal** archive members as inspiration, not just the current best — prevents mode-collapse back to the meta. (OpenEvolve does this; we copy it.)
+
+### 3.6 Adversarial critics (every LLM tier)
+
+Pattern: **generate → critique → revise once**. The critic is a second LLM
+call (same failover chain) prompted to REFUTE — find concrete, checkable
+errors — and return a structured verdict. The generator gets one revision
+against the critique; the revised output ships with the verdict attached.
+Never more than one round (free-tier token budget; diminishing returns).
+
+| Tier | Critic checks | Gate |
+|---|---|---|
+| T1 hypothesis | mechanics coherence (does the concept's scaling exist in PoE2? are named skills/items real per the datamined vocab?) | always |
+| T2 mutations | known no-ops (support gem levels), illegal ops, duplicate variants, out-of-budget allocations | env-gated `MOSSRAVEN_T2_CRITIC=1` (token cost vs. Tier-3 already being ground truth) |
+| T5 pool | selection diversity (cost bands, playstyles, classes), pitch claims vs. attached stats | always |
+| T6 guides | fact-check prose against the actual build: every gem named must exist in the XML; viability band quoted correctly; cost claims match the estimate; checkpoint passives must be real notables | always |
+
+The T6 critic is the highest-value adversary: guide hallucination is the
+visible product flaw. Mechanical pre-checks (gem-name-in-XML, band-string
+match) run in Rust BEFORE the LLM critic — never spend tokens on what a
+string search can catch.
 
 ---
 
