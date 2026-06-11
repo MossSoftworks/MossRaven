@@ -61,8 +61,9 @@ public sealed class PobEmbedHost : HwndHost
                 return;
             }
             // PoB builds its window asynchronously — poll for a usable
-            // main window handle (up to ~20 s; first launch loads tree data).
-            for (int i = 0; i < 100 && _child == IntPtr.Zero; i++)
+            // top-level window owned by the process (MainWindowHandle is
+            // unreliable for SimpleGraphic; enumerate by PID instead).
+            for (int i = 0; i < 150 && _child == IntPtr.Zero; i++)
             {
                 await Task.Delay(200);
                 if (_proc.HasExited)
@@ -70,24 +71,31 @@ public sealed class PobEmbedHost : HwndHost
                     _log("[pob-embed] PoB2 exited before its window appeared");
                     return;
                 }
-                _proc.Refresh();
-                var h = _proc.MainWindowHandle;
-                if (h != IntPtr.Zero && IsWindowVisible(h))
-                    _child = h;
+                _child = FindMainWindowForPid((uint)_proc.Id);
             }
             if (_child == IntPtr.Zero)
             {
                 _log("[pob-embed] no PoB2 window found to embed (still runs standalone)");
                 return;
             }
-            // Child-ify: strip the standalone frame, glue into our pane.
-            var style = GetWindowLongPtr(_child, GWL_STYLE).ToInt64();
-            style &= ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
-            style |= WS_CHILD;
-            SetWindowLongPtr(_child, GWL_STYLE, new IntPtr(style));
-            SetParent(_child, host);
-            ResizeChild();
+            Capture(host);
             _log("[pob-embed] PoB2 embedded");
+            // Watchdog: SimpleGraphic re-applies its own styles on some
+            // events (display-mode changes) and can pop back to top-level —
+            // re-capture for the lifetime of the host.
+            _ = Task.Run(async () =>
+            {
+                while (_proc is { HasExited: false })
+                {
+                    await Task.Delay(1500);
+                    if (_child == IntPtr.Zero) continue;
+                    if (GetParent(_child) != host)
+                    {
+                        try { Capture(host); _log("[pob-embed] re-captured PoB2 window"); }
+                        catch { }
+                    }
+                }
+            });
         }
         catch (Exception ex)
         {
@@ -124,6 +132,39 @@ public sealed class PobEmbedHost : HwndHost
         DestroyWindow(hwnd.Handle);
     }
 
+    /// <summary>Strip frame styles, parent into the host, force a frame
+    /// recalc, and size to the pane.</summary>
+    private void Capture(IntPtr host)
+    {
+        var style = GetWindowLongPtr(_child, GWL_STYLE).ToInt64();
+        style &= ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
+        style |= WS_CHILD | WS_VISIBLE;
+        SetWindowLongPtr(_child, GWL_STYLE, new IntPtr(style));
+        var ex = GetWindowLongPtr(_child, GWL_EXSTYLE).ToInt64();
+        ex &= ~WS_EX_APPWINDOW;
+        SetWindowLongPtr(_child, GWL_EXSTYLE, new IntPtr(ex));
+        SetParent(_child, host);
+        SetWindowPos(_child, IntPtr.Zero, 0, 0, 0, 0,
+            SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        Dispatcher.Invoke(ResizeChild);
+    }
+
+    private static IntPtr FindMainWindowForPid(uint pid)
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((hwnd, _) =>
+        {
+            GetWindowThreadProcessId(hwnd, out var wpid);
+            if (wpid == pid && IsWindowVisible(hwnd) && GetParent(hwnd) == IntPtr.Zero)
+            {
+                found = hwnd;
+                return false; // stop
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
     // ----- Win32 -----
     private const int GWL_STYLE = -16;
     private const long WS_CHILD = 0x40000000;
@@ -135,6 +176,18 @@ public sealed class PobEmbedHost : HwndHost
     private const long WS_MINIMIZEBOX = 0x00020000;
     private const long WS_MAXIMIZEBOX = 0x00010000;
     private const long WS_SYSMENU = 0x00080000;
+    private const int GWL_EXSTYLE = -20;
+    private const long WS_EX_APPWINDOW = 0x00040000;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOZORDER = 0x0004;
+    private const uint SWP_FRAMECHANGED = 0x0020;
+
+    private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lparam);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lparam);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int w, int h, uint flags);
 
     private static int W32(long v) => unchecked((int)v);
 

@@ -25,10 +25,9 @@
 //! - poe2 `/poe2/api/data/index-state` ALSO carries `snapshotVersions[]`
 //!   with daily build snapshots: `{snapshotName:"runes-of-aldur",
 //!   version:"1901-20260611-56379"}` — the `{version}` for builds routes.
-//! - `GET /poe2/api/builds/{version}/tooltip` → confirmed live (400 wants
-//!   params). `GET /poe2/api/builds/{version}/search` → 404 bare; needs the
-//!   query its `me()` JS helper appends (filter/column params) — next
-//!   session: read the helper chunk or capture one real request.
+//! - CONFIRMED `GET /poe2/api/builds/{version}/search?overview=<snapshotName>`
+//!   → ~52 KB ladder build data (the missing param was `overview`).
+//!   tooltip wants type+tooltip+overview.
 //!
 //! Behavior: gated by `MOSSRAVEN_NINJA=1`. On startup, refresh a price map
 //! (unique name → divine value) into `<data-dir>/ninja-prices.json` (24h
@@ -123,6 +122,33 @@ pub async fn refresh_prices(data_dir: &std::path::Path) {
             }
         }
     }
+    // Ladder meta snapshot (#74): builds search keyed by snapshot version
+    // from index-state.snapshotVersions (snapshotName with '-' stripped ==
+    // league url). Raw JSON cached for the seed-import / meta-distance
+    // consumers; refreshed with the same 24h cadence as prices.
+    if let Some((snap_ver, snap_name)) = current_snapshot(&client).await {
+        let url = format!(
+            "https://poe.ninja/poe2/api/builds/{snap_ver}/search?overview={snap_name}"
+        );
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => match resp.text().await {
+                Ok(body) => {
+                    let meta_path = data_dir.join("ninja-meta.json");
+                    match std::fs::write(&meta_path, &body) {
+                        Ok(()) => tracing::info!(
+                            bytes = body.len(), snapshot = %snap_name,
+                            path = %meta_path.display(), "ninja: ladder meta cached"
+                        ),
+                        Err(e) => tracing::warn!(error = %e, "ninja: meta write failed"),
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "ninja: meta read failed"),
+            },
+            Ok(resp) => tracing::warn!(status = %resp.status(), "ninja: builds search rejected"),
+            Err(e) => tracing::warn!(error = %e, "ninja: builds search failed"),
+        }
+    }
+
     if prices.is_empty() {
         tracing::info!("ninja: no live prices; cost model stays heuristic");
         return;
@@ -160,6 +186,41 @@ async fn current_league(client: &reqwest::Client) -> Option<String> {
         .find(|l| l.get("indexed").and_then(Value::as_bool).unwrap_or(false))
         .and_then(|l| l.get("name").and_then(Value::as_str))
         .map(String::from)
+}
+
+/// Current build snapshot (version id, snapshot name) from
+/// index-state.snapshotVersions, matched to the indexed league by
+/// "snapshotName minus hyphens == league url slug".
+async fn current_snapshot(client: &reqwest::Client) -> Option<(String, String)> {
+    let v: Value = client
+        .get("https://poe.ninja/poe2/api/data/index-state")
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let league_url = v
+        .get("economyLeagues")?
+        .as_array()?
+        .iter()
+        .find(|l| l.get("indexed").and_then(Value::as_bool).unwrap_or(false))
+        .and_then(|l| l.get("url").and_then(Value::as_str))?
+        .to_string();
+    let snaps = v.get("snapshotVersions")?.as_array()?;
+    let pick = snaps
+        .iter()
+        .find(|s| {
+            s.get("snapshotName")
+                .and_then(Value::as_str)
+                .map(|n| n.replace('-', "") == league_url)
+                .unwrap_or(false)
+        })
+        .or_else(|| snaps.first())?;
+    Some((
+        pick.get("version")?.as_str()?.to_string(),
+        pick.get("snapshotName")?.as_str()?.to_string(),
+    ))
 }
 
 /// Pull (name → divine value) pairs out of a poe.ninja overview payload.

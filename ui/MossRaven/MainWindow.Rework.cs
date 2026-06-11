@@ -39,6 +39,9 @@ public partial class MainWindow
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "Moss", "MossRaven", "data");
 
+    private DispatcherTimer? _schedTimer;
+    private string _lastSchedMinute = "";
+
     private void InitRework()
     {
         BuildPrefCombos();
@@ -46,6 +49,54 @@ public partial class MainWindow
         _opsTimer.Tick += (_, _) => RefreshOpsStatus();
         _opsTimer.Start();
         RefreshOpsStatus();
+
+        // Ops scheduling: HH:mm fields, checked once a minute.
+        ChurnStartTime.Text = _settings.ChurnStartAt;
+        ChurnStopTime.Text = _settings.ChurnStopAt;
+        RescoreAtTime.Text = _settings.RescoreAt;
+        TrainAtTime.Text = _settings.TrainAt;
+        foreach (var tb in new[] { ChurnStartTime, ChurnStopTime, RescoreAtTime, TrainAtTime })
+            tb.LostFocus += (_, _) => SaveSchedule();
+        _schedTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
+        _schedTimer.Tick += (_, _) => TickSchedule();
+        _schedTimer.Start();
+    }
+
+    private void SaveSchedule()
+    {
+        _settings.ChurnStartAt = ChurnStartTime.Text?.Trim() ?? "";
+        _settings.ChurnStopAt = ChurnStopTime.Text?.Trim() ?? "";
+        _settings.RescoreAt = RescoreAtTime.Text?.Trim() ?? "";
+        _settings.TrainAt = TrainAtTime.Text?.Trim() ?? "";
+        Services.SettingsService.Save(_settings);
+    }
+
+    private void TickSchedule()
+    {
+        var now = DateTime.Now.ToString("HH:mm");
+        if (now == _lastSchedMinute) return; // fire each matching minute once
+        _lastSchedMinute = now;
+        bool churnAlive = _churnProc is { HasExited: false };
+        if (now == _settings.ChurnStartAt && !churnAlive)
+        {
+            AppendLog($"[ops] scheduled churn start ({now})");
+            OpsChurnButton_Click(this, new RoutedEventArgs());
+        }
+        if (now == _settings.ChurnStopAt && churnAlive)
+        {
+            AppendLog($"[ops] scheduled churn stop ({now})");
+            OpsChurnButton_Click(this, new RoutedEventArgs());
+        }
+        if (now == _settings.RescoreAt)
+        {
+            AppendLog($"[ops] scheduled rescore ({now})");
+            OpsRescoreButton_Click(this, new RoutedEventArgs());
+        }
+        if (now == _settings.TrainAt)
+        {
+            AppendLog($"[ops] scheduled training ({now})");
+            OpsTrainButton_Click(this, new RoutedEventArgs());
+        }
     }
 
     // ----- Settings gear (titlebar) -----

@@ -51,6 +51,14 @@ public sealed class Settings
     /// <summary>Tier-3 training corpus logging (on by default).</summary>
     public bool CorpusEnabled { get; set; } = true;
 
+    /// <summary>Auto-embed/launch PoB2 on app start (downloads once if absent).</summary>
+    public bool AutoEmbedPob { get; set; } = true;
+    /// <summary>Ops scheduling (HH:mm, blank = manual): churn window + daily runs.</summary>
+    public string ChurnStartAt { get; set; } = "";
+    public string ChurnStopAt { get; set; } = "";
+    public string RescoreAt { get; set; } = "";
+    public string TrainAt { get; set; } = "";
+
     public const int HistoryCap = 50;
 
     /// <summary>First-run defaults: the three built-ins, keys empty (env fallback).</summary>

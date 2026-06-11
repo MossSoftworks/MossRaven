@@ -149,9 +149,9 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="330" MinWidth="260"/>
                     <ColumnDefinition Width="10"/>
-                    <ColumnDefinition Width="1*" MinWidth="300"/>
+                    <ColumnDefinition Width="1.1*" MinWidth="350"/>
                     <ColumnDefinition Width="10"/>
-                    <ColumnDefinition Width="1.5*" MinWidth="360"/>
+                    <ColumnDefinition Width="1.4*" MinWidth="360"/>
                 </Grid.ColumnDefinitions>
 
                 <!-- LEFT: Search Concept -->
@@ -410,13 +410,13 @@
                                     <TextBlock x:Name="T3CountText" Text="0"
                                                Foreground="{DynamicResource MossBrush}" FontWeight="SemiBold" FontSize="19"
                                                VerticalAlignment="Center" Margin="0,0,10,0"/>
-                                    <Button x:Name="FinalistHistoryButton" Content="History" Style="{StaticResource GhostBtn}"
+                                    <Button x:Name="FinalistHistoryButton" Content="History" Style="{StaticResource GhostBtn}" Padding="8,3" FontSize="12.5"
                                             ToolTip="Browse every saved finalist run"
                                             VerticalAlignment="Center" Margin="0,0,6,0" Click="FinalistHistoryButton_Click"/>
-                                    <Button x:Name="SynthesizeFinalistsButton" Content="Synthesize" Style="{StaticResource AccentBtn}"
+                                    <Button x:Name="SynthesizeFinalistsButton" Content="Synthesize" Style="{StaticResource AccentBtn}" Padding="8,3" FontSize="12.5"
                                             ToolTip="Tiers 6+7 — pool, curate 5, write guides"
                                             VerticalAlignment="Center" Margin="0,0,6,0" Click="SynthesizeFinalistsButton_Click"/>
-                                    <Button x:Name="RefreshArchiveButton" Content="Refresh" Style="{StaticResource GhostBtn}"
+                                    <Button x:Name="RefreshArchiveButton" Content="Refresh" Style="{StaticResource GhostBtn}" Padding="8,3" FontSize="12.5"
                                             VerticalAlignment="Center" Click="RefreshArchiveButton_Click"/>
                                 </StackPanel>
                             </DockPanel>
@@ -610,6 +610,14 @@
                             <Button x:Name="OpsChurnButton" DockPanel.Dock="Right" Content="Start" Style="{StaticResource GhostBtn}"
                                     Padding="10,2" Click="OpsChurnButton_Click"
                                     ToolTip="Overnight corpus growth (scripts\corpus-churn.ps1) — grows the Tier-3 training set"/>
+                            <TextBox x:Name="ChurnStopTime" DockPanel.Dock="Right" Width="46" Margin="0,0,4,0" FontSize="11.5"
+                                     VerticalContentAlignment="Center" Background="Transparent"
+                                     Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource DimmerBrush}"
+                                     ToolTip="Auto STOP time (HH:mm) — blank = never"/>
+                            <TextBox x:Name="ChurnStartTime" DockPanel.Dock="Right" Width="46" Margin="0,0,4,0" FontSize="11.5"
+                                     VerticalContentAlignment="Center" Background="Transparent"
+                                     Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource DimmerBrush}"
+                                     ToolTip="Auto START time (HH:mm) — blank = manual only"/>
                             <TextBlock x:Name="OpsChurnStatus" Text="Corpus churn — idle · 0 rows"
                                        Foreground="{DynamicResource DimBrush}" FontSize="12.5" VerticalAlignment="Center"
                                        TextTrimming="CharacterEllipsis"/>
@@ -618,6 +626,10 @@
                             <Button x:Name="OpsRescoreButton" DockPanel.Dock="Right" Content="Run" Style="{StaticResource GhostBtn}"
                                     Padding="10,2" Click="OpsRescoreButton_Click"
                                     ToolTip="Re-run PoB on every archive elite (run after each league patch / vendor pull)"/>
+                            <TextBox x:Name="RescoreAtTime" DockPanel.Dock="Right" Width="46" Margin="0,0,4,0" FontSize="11.5"
+                                     VerticalContentAlignment="Center" Background="Transparent"
+                                     Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource DimmerBrush}"
+                                     ToolTip="Auto-run daily at HH:mm — blank = manual only"/>
                             <TextBlock x:Name="OpsRescoreStatus" Text="Rescore archive — idle"
                                        Foreground="{DynamicResource DimBrush}" FontSize="12.5" VerticalAlignment="Center"
                                        TextTrimming="CharacterEllipsis"/>
@@ -626,6 +638,10 @@
                             <Button x:Name="OpsTrainButton" DockPanel.Dock="Right" Content="Train" Style="{StaticResource GhostBtn}"
                                     Padding="10,2" Click="OpsTrainButton_Click"
                                     ToolTip="Train the Tier-3 value model (needs Python + pip install lightgbm scikit-learn scipy; ≥5k corpus rows)"/>
+                            <TextBox x:Name="TrainAtTime" DockPanel.Dock="Right" Width="46" Margin="0,0,4,0" FontSize="11.5"
+                                     VerticalContentAlignment="Center" Background="Transparent"
+                                     Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource DimmerBrush}"
+                                     ToolTip="Auto-run daily at HH:mm — blank = manual only"/>
                             <TextBlock x:Name="OpsTrainStatus" Text="Value model — not trained"
                                        Foreground="{DynamicResource DimBrush}" FontSize="12.5" VerticalAlignment="Center"
                                        TextTrimming="CharacterEllipsis"/>

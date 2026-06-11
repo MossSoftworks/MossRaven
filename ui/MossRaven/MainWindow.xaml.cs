@@ -69,6 +69,9 @@ public partial class MainWindow : Window
             await ConnectServiceAsync();
             await RefreshArchiveAsync();
             _ = LoadVocabAsync();
+            // PoB2 autolaunch every open (first open downloads the official
+            // portable once). Toggle: Settings → AutoEmbedPob.
+            if (_settings.AutoEmbedPob) EnsurePobEmbedded();
             // Watch archive.json so external --tool calls (Claude in the shell)
             // and WPF's own clicks both auto-refresh the right pane.
             SetupArchiveWatcher();
@@ -219,13 +222,25 @@ public partial class MainWindow : Window
         List<string> runDirs;
         try
         {
-            runDirs = Directory.Exists(root)
+            var exists = Directory.Exists(root);
+            runDirs = exists
                 ? new List<string>(Directory.GetDirectories(root))
                 : new List<string>();
+            // Diagnostic for the persistent-empty report: print exactly what
+            // this process computes and sees, plus the env-var view.
+            var envRoot = Path.Combine(
+                Environment.GetEnvironmentVariable("APPDATA") ?? "?",
+                "Moss", "MossRaven", "data", "finalists");
+            AppendLog($"[history] root={root} exists={exists} dirs={runDirs.Count} envRoot={envRoot} envExists={Directory.Exists(envRoot)}");
+            if (runDirs.Count == 0 && Directory.Exists(envRoot))
+            {
+                runDirs = new List<string>(Directory.GetDirectories(envRoot));
+                AppendLog($"[history] env-var path served {runDirs.Count} runs (SpecialFolder path was empty)");
+            }
         }
         catch (Exception ex)
         {
-            AppendLog($"[history] scan failed: {ex.Message}");
+            AppendLog($"[history] scan failed: {ex}");
             runDirs = new List<string>();
         }
         // Dir names are unix timestamps — numeric sort, newest first.
@@ -263,14 +278,35 @@ public partial class MainWindow : Window
         }
 
         bool first = true;
+        int rendered = 0;
         foreach (var dir in runDirs)
         {
-            var expander = BuildRunExpander(dir, expandByDefault: first);
-            if (expander != null)
+            try
             {
-                FinalistHistoryPanel.Children.Add(expander);
-                first = false;
+                var expander = BuildRunExpander(dir, expandByDefault: first);
+                if (expander != null)
+                {
+                    FinalistHistoryPanel.Children.Add(expander);
+                    first = false;
+                    rendered++;
+                }
             }
+            catch (Exception ex)
+            {
+                AppendLog($"[history] run '{Path.GetFileName(dir)}' failed to render: {ex.Message}");
+            }
+        }
+        AppendLog($"[history] rendered {rendered}/{runDirs.Count} runs");
+        if (rendered == 0 && runDirs.Count > 0)
+        {
+            FinalistHistoryPanel.Children.Add(new TextBlock
+            {
+                Text = $"Found {runDirs.Count} run folders but none rendered — see Service status for per-run errors.",
+                FontSize = 12.5,
+                Margin = new Thickness(10, 12, 10, 0),
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = (Brush)FindResource("DimBrush"),
+            });
         }
     }
 
