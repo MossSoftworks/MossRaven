@@ -66,9 +66,18 @@ public partial class MainWindow : Window
         {
             ApplyPersistedState();
             InitRework();
+            // Identity stamp: kills the which-exe-did-you-launch class of
+            // bug forever (stale Debug builds masquerading as current).
+            var exePath = Environment.ProcessPath ?? "?";
+            var built = File.GetLastWriteTime(exePath);
+            AppendLog($"[launch] exe={exePath} built={built:yyyy-MM-dd HH:mm}");
+            Title = $"MossRaven — build {built:MM-dd HH:mm}";
             await ConnectServiceAsync();
             await RefreshArchiveAsync();
             _ = LoadVocabAsync();
+            // History self-diagnostic on EVERY launch (log-only) — no click
+            // needed for the [history] lines to appear.
+            try { LoadFinalistHistory(); } catch (Exception hx) { AppendLog($"[history] startup scan failed: {hx.Message}"); }
             // PoB2 autolaunch every open (first open downloads the official
             // portable once). Toggle: Settings → AutoEmbedPob.
             if (_settings.AutoEmbedPob) EnsurePobEmbedded();

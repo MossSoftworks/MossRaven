@@ -601,51 +601,75 @@
                     <Grid Margin="12,8,12,8">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
                         <TextBlock Grid.Row="0" Text="Ops" Style="{StaticResource PaneTitle}"/>
-                        <DockPanel Grid.Row="1" Margin="0,2,0,4" LastChildFill="True">
-                            <Button x:Name="OpsChurnButton" DockPanel.Dock="Right" Content="Start" Style="{StaticResource GhostBtn}"
-                                    Padding="10,2" Click="OpsChurnButton_Click"
-                                    ToolTip="Overnight corpus growth (scripts\corpus-churn.ps1) — grows the Tier-3 training set"/>
-                            <TextBox x:Name="ChurnStopTime" DockPanel.Dock="Right" Width="46" Margin="0,0,4,0" FontSize="11.5"
-                                     VerticalContentAlignment="Center" Background="Transparent"
-                                     Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource DimmerBrush}"
-                                     ToolTip="Auto STOP time (HH:mm) — blank = never"/>
-                            <TextBox x:Name="ChurnStartTime" DockPanel.Dock="Right" Width="46" Margin="0,0,4,0" FontSize="11.5"
-                                     VerticalContentAlignment="Center" Background="Transparent"
-                                     Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource DimmerBrush}"
-                                     ToolTip="Auto START time (HH:mm) — blank = manual only"/>
-                            <TextBlock x:Name="OpsChurnStatus" Text="Corpus churn — idle · 0 rows"
-                                       Foreground="{DynamicResource DimBrush}" FontSize="12.5" VerticalAlignment="Center"
-                                       TextTrimming="CharacterEllipsis"/>
-                        </DockPanel>
-                        <DockPanel Grid.Row="2" Margin="0,0,0,4" LastChildFill="True">
-                            <Button x:Name="OpsRescoreButton" DockPanel.Dock="Right" Content="Run" Style="{StaticResource GhostBtn}"
-                                    Padding="10,2" Click="OpsRescoreButton_Click"
-                                    ToolTip="Re-run PoB on every archive elite (run after each league patch / vendor pull)"/>
-                            <TextBox x:Name="RescoreAtTime" DockPanel.Dock="Right" Width="46" Margin="0,0,4,0" FontSize="11.5"
-                                     VerticalContentAlignment="Center" Background="Transparent"
-                                     Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource DimmerBrush}"
-                                     ToolTip="Auto-run daily at HH:mm — blank = manual only"/>
-                            <TextBlock x:Name="OpsRescoreStatus" Text="Rescore archive — idle"
-                                       Foreground="{DynamicResource DimBrush}" FontSize="12.5" VerticalAlignment="Center"
-                                       TextTrimming="CharacterEllipsis"/>
-                        </DockPanel>
-                        <DockPanel Grid.Row="3" LastChildFill="True">
-                            <Button x:Name="OpsTrainButton" DockPanel.Dock="Right" Content="Train" Style="{StaticResource GhostBtn}"
-                                    Padding="10,2" Click="OpsTrainButton_Click"
-                                    ToolTip="Train the Tier-3 value model (needs Python + pip install lightgbm scikit-learn scipy; ≥5k corpus rows)"/>
-                            <TextBox x:Name="TrainAtTime" DockPanel.Dock="Right" Width="46" Margin="0,0,4,0" FontSize="11.5"
-                                     VerticalContentAlignment="Center" Background="Transparent"
-                                     Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource DimmerBrush}"
-                                     ToolTip="Auto-run daily at HH:mm — blank = manual only"/>
-                            <TextBlock x:Name="OpsTrainStatus" Text="Value model — not trained"
-                                       Foreground="{DynamicResource DimBrush}" FontSize="12.5" VerticalAlignment="Center"
-                                       TextTrimming="CharacterEllipsis"/>
-                        </DockPanel>
+                        <Grid Grid.Row="1" Margin="0,2,0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="Corpus churn" Foreground="{DynamicResource TextBrush}" FontWeight="SemiBold" FontSize="13"/>
+                                <TextBlock x:Name="OpsChurnStatus" Text="idle · 0 rows"
+                                           Foreground="{DynamicResource DimBrush}" FontSize="12" TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBox x:Name="ChurnStartTime" Width="46" Margin="0,0,4,0" FontSize="11.5"
+                                         VerticalContentAlignment="Center" Background="Transparent"
+                                         Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource DimmerBrush}"
+                                         ToolTip="Auto START (HH:mm) — blank = manual"/>
+                                <TextBox x:Name="ChurnStopTime" Width="46" Margin="0,0,4,0" FontSize="11.5"
+                                         VerticalContentAlignment="Center" Background="Transparent"
+                                         Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource DimmerBrush}"
+                                         ToolTip="Auto STOP (HH:mm) — blank = never"/>
+                                <Button x:Name="OpsChurnButton" Content="Start" Style="{StaticResource GhostBtn}"
+                                        Padding="10,3" Click="OpsChurnButton_Click"
+                                        ToolTip="Overnight corpus growth — grows the Tier-3 training set"/>
+                            </StackPanel>
+                        </Grid>
+                        <Grid Grid.Row="2" Margin="0,0,0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="Rescore archive" Foreground="{DynamicResource TextBrush}" FontWeight="SemiBold" FontSize="13"/>
+                                <TextBlock x:Name="OpsRescoreStatus" Text="idle — run after each league patch"
+                                           Foreground="{DynamicResource DimBrush}" FontSize="12" TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBox x:Name="RescoreAtTime" Width="46" Margin="0,0,4,0" FontSize="11.5"
+                                         VerticalContentAlignment="Center" Background="Transparent"
+                                         Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource DimmerBrush}"
+                                         ToolTip="Auto-run daily at HH:mm — blank = manual"/>
+                                <Button x:Name="OpsRescoreButton" Content="Run" Style="{StaticResource GhostBtn}"
+                                        Padding="10,3" Click="OpsRescoreButton_Click"
+                                        ToolTip="Re-run PoB on every archive elite"/>
+                            </StackPanel>
+                        </Grid>
+                        <Grid Grid.Row="3">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="Value model" Foreground="{DynamicResource TextBrush}" FontWeight="SemiBold" FontSize="13"/>
+                                <TextBlock x:Name="OpsTrainStatus" Text="not trained"
+                                           Foreground="{DynamicResource DimBrush}" FontSize="12" TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBox x:Name="TrainAtTime" Width="46" Margin="0,0,4,0" FontSize="11.5"
+                                         VerticalContentAlignment="Center" Background="Transparent"
+                                         Foreground="{DynamicResource TextBrush}" BorderBrush="{DynamicResource DimmerBrush}"
+                                         ToolTip="Auto-run daily at HH:mm — blank = manual"/>
+                                <Button x:Name="OpsTrainButton" Content="Train" Style="{StaticResource GhostBtn}"
+                                        Padding="10,3" Click="OpsTrainButton_Click"
+                                        ToolTip="Train the Tier-3 value model (needs pip install lightgbm scikit-learn scipy; 5k+ rows)"/>
+                            </StackPanel>
+                        </Grid>
                     </Grid>
                 </Border>
             </Grid>

@@ -31,7 +31,7 @@ public sealed class PobEmbedHost : HwndHost
         _log = log;
     }
 
-    public bool IsAlive => _proc is { HasExited: false } && _child != IntPtr.Zero;
+    public bool IsAlive => _child != IntPtr.Zero;
 
     protected override HandleRef BuildWindowCore(HandleRef hwndParent)
     {
@@ -66,12 +66,17 @@ public sealed class PobEmbedHost : HwndHost
             for (int i = 0; i < 150 && _child == IntPtr.Zero; i++)
             {
                 await Task.Delay(200);
-                if (_proc.HasExited)
+                if (_proc.HasExited && _child == IntPtr.Zero && i < 30)
                 {
-                    _log("[pob-embed] PoB2 exited before its window appeared");
-                    return;
+                    // Squirrel-style stubs exit after spawning the real app —
+                    // fall through to the title search instead of bailing.
+                    _log("[pob-embed] launcher exited early — searching by window title");
                 }
                 _child = FindMainWindowForPid((uint)_proc.Id);
+                // Fallback: the real window may belong to a CHILD process
+                // (updater stubs). Match any new top-level titled like PoB.
+                if (_child == IntPtr.Zero && i >= 25)
+                    _child = FindWindowByTitleContains("Path of Building");
             }
             if (_child == IntPtr.Zero)
             {
@@ -149,6 +154,24 @@ public sealed class PobEmbedHost : HwndHost
         Dispatcher.Invoke(ResizeChild);
     }
 
+    private static IntPtr FindWindowByTitleContains(string needle)
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((hwnd, _) =>
+        {
+            if (!IsWindowVisible(hwnd) || GetParent(hwnd) != IntPtr.Zero) return true;
+            var sb = new System.Text.StringBuilder(256);
+            GetWindowText(hwnd, sb, sb.Capacity);
+            if (sb.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase))
+            {
+                found = hwnd;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
     private static IntPtr FindMainWindowForPid(uint pid)
     {
         IntPtr found = IntPtr.Zero;
@@ -188,6 +211,7 @@ public sealed class PobEmbedHost : HwndHost
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int w, int h, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder text, int count);
 
     private static int W32(long v) => unchecked((int)v);
 

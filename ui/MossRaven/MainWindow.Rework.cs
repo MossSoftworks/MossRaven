@@ -432,7 +432,7 @@ public partial class MainWindow
                 bytes = new DirectoryInfo(corpusDir).GetFiles("evals-*.jsonl").Sum(f => f.Length);
             var rows = bytes / 2000;
             var churnAlive = _churnProc is { HasExited: false };
-            OpsChurnStatus.Text = $"Corpus churn — {(churnAlive ? "RUNNING" : "idle")} · ~{rows:N0} rows ({bytes / 1048576.0:N1} MB)";
+            OpsChurnStatus.Text = $"{(churnAlive ? "RUNNING" : "idle")} · ~{rows:N0} rows ({bytes / 1048576.0:N1} MB)";
             OpsChurnButton.Content = churnAlive ? "Stop" : "Start";
 
             // Value model: report file next to repo root.
@@ -444,13 +444,13 @@ public partial class MainWindow
             {
                 using var doc = JsonDocument.Parse(File.ReadAllText(report.FullName));
                 var sp = doc.RootElement.TryGetProperty("spearman", out var s) ? s.GetDouble() : 0;
-                OpsTrainStatus.Text = $"Value model — trained {report.LastWriteTime:MM-dd HH:mm} · spearman {sp:N2}";
+                OpsTrainStatus.Text = $"trained {report.LastWriteTime:MM-dd HH:mm} · spearman {sp:N2}";
             }
             else
             {
                 OpsTrainStatus.Text = rows >= 5000
-                    ? "Value model — corpus ready, not trained"
-                    : $"Value model — needs ≥5k rows (have ~{rows:N0})";
+                    ? "corpus ready — not trained yet"
+                    : $"needs ≥5k rows (have ~{rows:N0})";
             }
         }
         catch
@@ -524,18 +524,18 @@ public partial class MainWindow
     private async void OpsRescoreButton_Click(object sender, RoutedEventArgs e)
     {
         OpsRescoreButton.IsEnabled = false;
-        OpsRescoreStatus.Text = "Rescore archive — running…";
+        OpsRescoreStatus.Text = "running…";
         AppendLog("[ops] rescore_archive started (re-runs PoB on every elite)");
         try
         {
             var json = await _service.RescoreArchiveAsync();
-            OpsRescoreStatus.Text = $"Rescore archive — done {DateTime.Now:HH:mm} · {Snippet(json.Replace("\n", " "), 60)}";
+            OpsRescoreStatus.Text = $"done {DateTime.Now:HH:mm} · {Snippet(json.Replace("\n", " "), 60)}";
             AppendLog($"[ops] rescore done: {Snippet(json.Replace("\n", " "), 200)}");
             await RefreshArchiveAsync();
         }
         catch (Exception ex)
         {
-            OpsRescoreStatus.Text = "Rescore archive — FAILED (see log)";
+            OpsRescoreStatus.Text = "FAILED (see log)";
             AppendLog($"[ops] rescore failed: {ex.Message}");
         }
         finally
