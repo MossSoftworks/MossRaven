@@ -45,6 +45,10 @@ public partial class ModelSettingsWindow : Window
         AnthropicKeyBox.Text = _settings.AnthropicApiKey;
         AnthropicModelBox.Text = _settings.AnthropicModel;
         Tier1Combo.SelectionChanged += (_, _) => UpdateAnthropicRowVisibility();
+        PobPathBox.Text = _settings.PobInstallPath ?? "";
+        NinjaCheck.IsChecked = _settings.NinjaEnabled;
+        NinjaUrlBox.Text = _settings.NinjaItemUrl ?? "";
+        CorpusCheck.IsChecked = _settings.CorpusEnabled;
         UpdateAnthropicRowVisibility();
     }
 
@@ -204,6 +208,10 @@ public partial class ModelSettingsWindow : Window
         _settings.Tier1Provider = sel.StartsWith("(automatic") ? "" : sel;
         _settings.AnthropicApiKey = AnthropicKeyBox.Text.Trim();
         _settings.AnthropicModel = AnthropicModelBox.Text.Trim();
+        _settings.PobInstallPath = PobPathBox.Text?.Trim() ?? "";
+        _settings.NinjaEnabled = NinjaCheck.IsChecked == true;
+        _settings.NinjaItemUrl = NinjaUrlBox.Text?.Trim() ?? "";
+        _settings.CorpusEnabled = CorpusCheck.IsChecked == true;
         SettingsService.Save(_settings);
         Saved = true;
         Close();

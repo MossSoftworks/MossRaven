@@ -42,6 +42,15 @@ public sealed class Settings
     public string AnthropicApiKey { get; set; } = "";
     public string AnthropicModel { get; set; } = "claude-sonnet-4-5";
 
+    /// <summary>Path to the desktop PoB2 executable (workspace's "Open in PoB2").</summary>
+    public string PobInstallPath { get; set; } = "";
+    /// <summary>poe.ninja live unique prices (MOSSRAVEN_NINJA=1).</summary>
+    public bool NinjaEnabled { get; set; } = false;
+    /// <summary>Override route template for the ninja item overview.</summary>
+    public string NinjaItemUrl { get; set; } = "";
+    /// <summary>Tier-3 training corpus logging (on by default).</summary>
+    public bool CorpusEnabled { get; set; } = true;
+
     public const int HistoryCap = 50;
 
     /// <summary>First-run defaults: the three built-ins, keys empty (env fallback).</summary>
@@ -122,6 +131,13 @@ public sealed class Settings
                 }
                 break;
         }
+        // Ops + grounding toggles (SPEC 3.7 / 1.1.2).
+        env["MOSSRAVEN_NINJA"] = NinjaEnabled ? "1" : "";
+        if (!string.IsNullOrWhiteSpace(NinjaItemUrl))
+            env["MOSSRAVEN_NINJA_ITEM_URL"] = NinjaItemUrl;
+        if (!CorpusEnabled)
+            env["MOSSRAVEN_CORPUS"] = "0";
+
         return env;
     }
 }

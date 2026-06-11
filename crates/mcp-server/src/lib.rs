@@ -106,6 +106,35 @@ pub fn control_surface_tools() -> Vec<ToolSchema> {
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolSchema {
+            name: "get_vocab".into(),
+            description: "Autofill vocabularies for the UI: top skill gems, support gems, unique items, and tree notables from the live PoB data.".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolSchema {
+            name: "score_xml".into(),
+            description: "Score one build (PoB XML or import code) through the Tier-4 judge. Returns stats + viability + cost.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "xml": { "type": "string", "description": "PoB2 build XML (or pass code)" },
+                    "code": { "type": "string", "description": "PoB2 import code (alternative to xml)" }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "retool_build".into(),
+            description: "Retool an existing build (import code) for a play mode: mapping | bossing | both | leveling. Seeds the engine from the build, runs a mode-biased search, then synthesizes finalists (leveling mode emphasizes a robust leveling guide).".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string", "description": "PoB2 import code of the build to retool" },
+                    "mode": { "type": "string", "enum": ["mapping", "bossing", "both", "leveling"] },
+                    "generations": { "type": "integer", "minimum": 1, "description": "Search budget (default 8)" }
+                },
+                "required": ["code", "mode"]
+            }),
+        },
+        ToolSchema {
             name: "save_finalists".into(),
             description: "Persist curated finalists to the MossRaven data directory (finalists.json + per-finalist markdown guide, PoB XML, and import-code file). Mode A calls this automatically after synthesis; in Mode B the driving Claude calls it with the finalists it curated. Returns the directory written.".into(),
             input_schema: json!({
@@ -146,6 +175,18 @@ pub trait ControlSurface: Send + Sync {
         Err(McpError::ToolFailed(
             "save_finalists not implemented on this ControlSurface".into(),
         ))
+    }
+    /// Autofill vocab for the UI. Default: not implemented.
+    async fn get_vocab(&self) -> Result<Value, McpError> {
+        Err(McpError::ToolFailed("get_vocab not implemented".into()))
+    }
+    /// Score one build through the judge. Default: not implemented.
+    async fn score_xml(&self, _args: Value) -> Result<Value, McpError> {
+        Err(McpError::ToolFailed("score_xml not implemented".into()))
+    }
+    /// Retool a build for a play mode. Default: not implemented.
+    async fn retool_build(&self, _args: Value) -> Result<Value, McpError> {
+        Err(McpError::ToolFailed("retool_build not implemented".into()))
     }
     /// Maintenance: re-score every archive elite with the current Tier 3 and
     /// drop entries that fail hard legality (passive point budget). Default:
@@ -338,6 +379,9 @@ async fn call_tool<S: ControlSurface>(
         "synthesize_finalists" => surface.synthesize_finalists().await,
         "save_finalists" => surface.save_finalists(args).await,
         "rescore_archive" => surface.rescore_archive().await,
+        "get_vocab" => surface.get_vocab().await,
+        "score_xml" => surface.score_xml(args).await,
+        "retool_build" => surface.retool_build(args).await,
         other => Err(McpError::UnknownTool(other.to_string())),
     }
 }

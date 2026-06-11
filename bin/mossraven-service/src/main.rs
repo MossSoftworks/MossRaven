@@ -210,6 +210,9 @@ async fn run_tool_call(tool: &str, args_json: &str, pob_path: &str) -> anyhow::R
         "synthesize_finalists" => surface.synthesize_finalists().await,
         "save_finalists" => surface.save_finalists(args).await,
         "rescore_archive" => surface.rescore_archive().await,
+        "get_vocab" => surface.get_vocab().await,
+        "score_xml" => surface.score_xml(args).await,
+        "retool_build" => surface.retool_build(args).await,
         other => return Err(anyhow::anyhow!("unknown tool: {other}")),
     };
 
@@ -1281,6 +1284,109 @@ impl ControlSurface for ServiceControlSurface {
         }))
     }
 
+    /// Autofill vocab for the UI preference dropdowns: skills/supports from
+    /// the live gem db, uniques from the unique db, notables from the tree.
+    async fn get_vocab(&self) -> Result<Value, McpError> {
+        let gem_db = &self.ctx.engine.gem_db;
+        let unique_db = &self.ctx.engine.unique_db;
+        let (skills, supports) = gem_db.name_lists(300, 300);
+        let uniques: Vec<String> = [
+            "staff", "wand", "sceptre", "amulet", "ring", "gloves", "helmet", "body", "boots",
+            "belt", "focus", "shield", "bow", "crossbow", "quarterstaff", "spear", "mace",
+        ]
+        .iter()
+        .flat_map(|k| unique_db.of_kind(k).iter().map(|u| u.name.clone()))
+        .collect();
+        let notables = self
+            .ctx
+            .engine
+            .tree_db
+            .version("0_4")
+            .map(|tv| {
+                let mut v: Vec<String> =
+                    tv.notable_by_name.keys().map(|k| titlecase_words(k)).collect();
+                v.sort();
+                v
+            })
+            .unwrap_or_default();
+        Ok(json!({ "skills": skills, "supports": supports, "uniques": uniques, "notables": notables }))
+    }
+
+    /// Score one build (XML or import code) through the judge; returns
+    /// stats + viability + cost. The Build Workspace re-score button.
+    async fn score_xml(&self, args: Value) -> Result<Value, McpError> {
+        let xml = if let Some(x) = args.get("xml").and_then(|v| v.as_str()) {
+            x.to_string()
+        } else if let Some(c) = args.get("code").and_then(|v| v.as_str()) {
+            mossraven_archive::decode_pob_import_code(c)
+                .map_err(|e| McpError::Protocol(format!("bad import code: {e}")))?
+        } else {
+            return Err(McpError::Protocol("score_xml: need xml or code".into()));
+        };
+        let scored = self
+            .ctx
+            .engine
+            .judge
+            .score(vec![("workspace".into(), xml.clone())])
+            .await
+            .map_err(|e| McpError::ToolFailed(format!("score_xml: {e}")))?;
+        let stats = scored
+            .into_iter()
+            .next()
+            .and_then(|(_, r)| r.ok())
+            .ok_or_else(|| McpError::ToolFailed("score_xml: judge rejected the build".into()))?;
+        let data_version = self.ctx.engine.state.lock().config.data_version.clone();
+        mossraven_core::corpus::log_evals([(xml.as_str(), &stats)].into_iter(), &data_version);
+        let cost = mossraven_core::cost::estimate_cost(&xml);
+        Ok(json!({
+            "stats": stats,
+            "viability": mossraven_core::viability::check(&stats),
+            "cost": cost,
+            "pob_import_code": mossraven_archive::encode_pob_import_code(&xml),
+        }))
+    }
+
+    /// Retool an imported build for a play mode: seed the engine FROM the
+    /// build, run a mode-biased search, then the Tier-6/7 pipeline.
+    /// Leveling mode biases toward a robust checkpoint guide.
+    async fn retool_build(&self, args: Value) -> Result<Value, McpError> {
+        let code = args
+            .get("code")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError::Protocol("retool_build: missing code".into()))?;
+        let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("both");
+        let generations = args.get("generations").and_then(|v| v.as_u64()).unwrap_or(8) as u32;
+        let xml = mossraven_archive::decode_pob_import_code(code)
+            .map_err(|e| McpError::Protocol(format!("bad import code: {e}")))?;
+        let concept = match mode {
+            "bossing" => "Retool this imported build for BOSSING: maximize single-target DPS and survivability for pinnacle fights; keep its core skill identity.",
+            "mapping" => "Retool this imported build for MAPPING: maximize clear speed, pack coverage and movement; keep its core skill identity.",
+            "leveling" => "Retool this imported build for LEVELING: the deliverable is a ROBUST leveling path - what to run at every checkpoint from Act 1 to maps, cheap gear, smooth respec into the final form. Search for variants that keep early-game power.",
+            _ => "Retool this imported build for BOTH mapping and bossing via the weapon-set swap duality; keep its core skill identity.",
+        };
+        self.ctx.engine.set_state(concept, None, None, xml.clone());
+        let _ = SessionState {
+            concept: concept.to_string(),
+            rationale: None,
+            initial_cell_focus: None,
+            seed_pob_xml: xml,
+        }
+        .save(&self.ctx.session_path);
+        let mut done = 0u32;
+        for g in 0..generations {
+            match self.ctx.engine.step().await {
+                Ok(r) => {
+                    tracing::info!(gen = g + 1, of = generations, report = ?r, "retool generation");
+                    done += 1;
+                }
+                Err(e) => tracing::warn!(error = %e, "retool generation failed"),
+            }
+        }
+        let _ = self.ctx.archive.save_if_dirty(&self.ctx.archive_path);
+        let synth = self.synthesize_finalists().await?;
+        Ok(json!({ "mode": mode, "generations": done, "result": synth }))
+    }
+
     /// Maintenance: re-run Tier 3 on every archive elite. Refreshes stats
     /// (incl. the passive-point fields older entries never measured) and
     /// DROPS entries whose tree exceeds the budget — PoB scores illegal
@@ -1663,6 +1769,21 @@ fn index_html(rows: &[(String, String)], finalists: &[mossraven_dreamer::Finalis
     }
     s.push_str("</ol></div></body></html>\n");
     s
+}
+
+
+/// "raw notable key" -> "Raw Notable Key" (tree db keys are lowercased).
+fn titlecase_words(s: &str) -> String {
+    s.split(' ')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Lowercase alnum-dash slug used for finalist file stems, capped at `max` chars.

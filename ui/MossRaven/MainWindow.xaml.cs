@@ -34,6 +34,8 @@ public partial class MainWindow : Window
     private readonly System.Collections.Generic.List<string> _t2Lines = new();
     private readonly System.Collections.Generic.List<string> _t3Lines = new();
     private readonly System.Collections.Generic.List<string> _t4Lines = new();
+    private readonly System.Collections.Generic.List<string> _t6Lines = new();
+    private readonly System.Collections.Generic.List<string> _t7Lines = new();
     private const int MaxLogLines = 30;
 
     public MainWindow()
@@ -57,8 +59,10 @@ public partial class MainWindow : Window
         Loaded += async (_, _) =>
         {
             ApplyPersistedState();
+            InitRework();
             await ConnectServiceAsync();
             await RefreshArchiveAsync();
+            _ = LoadVocabAsync();
             // Watch archive.json so external --tool calls (Claude in the shell)
             // and WPF's own clicks both auto-refresh the right pane.
             SetupArchiveWatcher();
@@ -106,6 +110,7 @@ public partial class MainWindow : Window
     {
         var concept = ConceptInput.Text?.Trim() ?? string.Empty;
         if (concept.Length == 0) return;
+        concept += PreferenceSuffix();
 
         SettingsService.AppendHistory(_settings, concept);
         _settings.LastConcept = concept;
@@ -199,6 +204,8 @@ public partial class MainWindow : Window
         BuildListHint.Text = "Expand a run, click a build for its full guide (PoB code copies from the detail window).";
     }
 
+    private bool _historyRetryDone;
+
     private void LoadFinalistHistory()
     {
         FinalistHistoryPanel.Children.Clear();
@@ -225,6 +232,19 @@ public partial class MainWindow : Window
 
         if (runDirs.Count == 0)
         {
+            // Transient-fs resilience (same incident class as the blank
+            // archive): if the data dir exists but scans come back empty,
+            // re-scan once after 3s before believing it.
+            if (!_historyRetryDone && Directory.Exists(Path.GetDirectoryName(root) ?? root))
+            {
+                _historyRetryDone = true;
+                AppendLog("[history] scan found 0 runs — retrying once in 3s");
+                _ = System.Threading.Tasks.Task.Run(async () =>
+                {
+                    await System.Threading.Tasks.Task.Delay(3000);
+                    await Dispatcher.InvokeAsync(LoadFinalistHistory);
+                });
+            }
             FinalistHistoryPanel.Children.Add(new TextBlock
             {
                 Text = "No saved runs yet — Synthesize (or a Mode-B save_finalists) writes one per run.",
@@ -410,6 +430,26 @@ public partial class MainWindow : Window
         {
             var json = await _service.SynthesizeFinalistsAsync();
             RenderFinalists(json);
+            // Tier 6/7 pane counters from the v2 pipeline result.
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("pool_size", out var ps))
+                {
+                    T6HeaderCount.Text = $"pool = {ps.GetInt32()}";
+                    AppendCapped(_t6Lines, $"pool of {ps.GetInt32()} selected from the frontier", MaxLogLines);
+                }
+                if (root.TryGetProperty("finalists", out var fl) && fl.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    T7HeaderCount.Text = $"n = {fl.GetArrayLength()}";
+                    foreach (var f in fl.EnumerateArray())
+                        AppendCapped(_t7Lines, f.TryGetProperty("title", out var t) ? (t.GetString() ?? "build") : "build", MaxLogLines);
+                }
+                T6Log.Text = _t6Lines.Count == 0 ? "(no pools yet — run Synthesize)" : string.Join(System.Environment.NewLine, _t6Lines);
+                T7Log.Text = _t7Lines.Count == 0 ? "(no curations yet)" : string.Join(System.Environment.NewLine, _t7Lines);
+            }
+            catch { /* counters are cosmetic */ }
         }
         catch (Exception ex)
         {
@@ -822,14 +862,6 @@ public partial class MainWindow : Window
         return template;
     }
 
-    private void BuildList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        // Selection-and-paste behavior: click an item, its PoB import code goes to clipboard.
-        if (sender is ListBox lb && lb.SelectedItem is BuildEntry entry)
-        {
-            CopyBuildToClipboard(entry);
-        }
-    }
 
     /// <summary>
     /// Wired up programmatically because the auto-named handler from XAML
@@ -840,12 +872,11 @@ public partial class MainWindow : Window
     private void EnsureBuildListWiredOnce()
     {
         if (_buildListWired) return;
-        BuildList.MouseLeftButtonUp += BuildList_PreviewMouseLeftButtonUp;
         BuildList.SelectionChanged += (_, _) =>
         {
             if (BuildList.SelectedItem is BuildEntry entry)
             {
-                CopyBuildToClipboard(entry);
+                LoadIntoWorkspace(entry);
             }
         };
         _buildListWired = true;

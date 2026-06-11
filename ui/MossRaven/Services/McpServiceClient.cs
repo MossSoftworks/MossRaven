@@ -134,6 +134,18 @@ public sealed class McpServiceClient : IDisposable
     public Task<string> SynthesizeFinalistsAsync(CancellationToken ct = default)
         => CallToolAsync("synthesize_finalists", JsonSerializer.SerializeToElement(new { }), ct);
 
+    public Task<string> GetVocabAsync(CancellationToken ct = default)
+        => CallToolAsync("get_vocab", JsonSerializer.SerializeToElement(new { }), ct);
+
+    public Task<string> ScoreXmlAsync(string xml, CancellationToken ct = default)
+        => CallToolAsync("score_xml", JsonSerializer.SerializeToElement(new { xml }), ct);
+
+    public Task<string> RetoolBuildAsync(string code, string mode, CancellationToken ct = default)
+        => CallToolAsync("retool_build", JsonSerializer.SerializeToElement(new { code, mode }), ct);
+
+    public Task<string> RescoreArchiveAsync(CancellationToken ct = default)
+        => CallToolAsync("rescore_archive", JsonSerializer.SerializeToElement(new { }), ct);
+
     private async Task<string> CallToolAsync(string tool, JsonElement args, CancellationToken ct)
     {
         if (_proc?.StandardInput is null)

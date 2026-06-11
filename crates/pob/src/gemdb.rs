@@ -141,6 +141,25 @@ impl GemDb {
     /// the LIVE game data this db was parsed from — every listed name is
     /// guaranteed applier-valid (the swap/add ops resolve through this same
     /// db). Replaces the embedded 0.2/0.3-era datamined list.
+    /// Plain (skills, supports) name lists for UI autofill — same data the
+    /// prompt block formats, without the prompt scaffolding.
+    pub fn name_lists(&self, max_skills: usize, max_supports: usize) -> (Vec<String>, Vec<String>) {
+        let mut skills = Vec::new();
+        let mut supports = Vec::new();
+        for (name, info) in &self.by_name {
+            if info.gem_type.eq_ignore_ascii_case("support") {
+                supports.push(name.clone());
+            } else {
+                skills.push(name.clone());
+            }
+        }
+        skills.sort();
+        supports.sort();
+        skills.truncate(max_skills);
+        supports.truncate(max_supports);
+        (skills, supports)
+    }
+
     pub fn prompt_block(&self, max_skills: usize, max_supports: usize) -> String {
         let mut skills: Vec<&GemInfo> = Vec::new();
         let mut supports: Vec<&GemInfo> = Vec::new();
