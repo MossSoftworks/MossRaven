@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use mossraven_archive::Archive;
-use mossraven_core::{tier3::LocalBackend, SearchEngine};
+use mossraven_core::{judge::LocalBackend, SearchEngine};
 use mossraven_dreamer::{AnthropicApiDriver, ExternalMcpDriver, TierOneDriver};
 use mossraven_mcp_server::{ControlSurface, McpError};
 use mossraven_pob::PobParser;
@@ -85,7 +85,7 @@ fn parse_args() -> Args {
                      read_archive     args: {{}}\n    \
                      inspect_cell     args: {{\"damage_type\": \"...\", \"defense_layer\": \"...\", ...}}\n    \
                      get_frontier     args: {{}}\n    \
-                     synthesize_finalists args: {{}}  # Tier 5: Claude curates frontier → narrated finalists\n    \
+                     synthesize_finalists args: {{}}  # Tiers 6+7: select pool, curate 5, write guides → narrated finalists\n    \
                      save_finalists   args: {{\"finalists\": [...]}}  # persist curated finalists (Mode B write-back)\n    \
                      rescore_archive  args: {{}}  # maintenance: re-run PoB on every elite, drop over-budget trees (run after vendor pulls)\n\n\
                      ENV:\n    \
@@ -95,10 +95,10 @@ fn parse_args() -> Args {
                      MOSSRAVEN_POOL_SIZE              Local Tier-3 PobParser workers (default 1, cap min(cores/2, 8))\n    \
                      MOSSRAVEN_NODE_URLS              Comma-separated mossraven-node URLs — switches Tier-3 to REMOTE\n    \
                      MOSSRAVEN_NODE_BEARER            Bearer for remote nodes (default: dev bearer)\n    \
-                     MOSSRAVEN_ANTHROPIC_API_KEY      Tier-1/5 driver: Anthropic (best guides)\n    \
+                     MOSSRAVEN_ANTHROPIC_API_KEY      Tier-1/6/7 driver: Anthropic (best guides)\n    \
                      MOSSRAVEN_ANTHROPIC_MODEL        Default: claude-sonnet-4-5\n    \
-                     MOSSRAVEN_T1_BASE_URL/_MODEL[/_API_KEY]  Tier-1/5 driver: any OpenAI-compat (Ollama etc.)\n    \
-                     (no T1 key? GEMINI_API_KEY or GROQ_API_KEY also drive Tier-1/5 — free solo Mode A)\n    \
+                     MOSSRAVEN_T1_BASE_URL/_MODEL[/_API_KEY]  Tier-1/6/7 driver: any OpenAI-compat (Ollama etc.)\n    \
+                     (no T1 key? GEMINI_API_KEY or GROQ_API_KEY also drive Tier-1/6/7 — free solo Mode A)\n    \
                      CEREBRAS_API_KEY               Tier-2 surrogate provider (free tier)\n    \
                      CEREBRAS_MODEL                 Default: gpt-oss-120b\n    \
                      CEREBRAS_BASE_URL              Default: https://api.cerebras.ai/v1\n    \
@@ -540,22 +540,22 @@ async fn build_context(pob_path: &str) -> Context {
     {
         let model = std::env::var("MOSSRAVEN_ANTHROPIC_MODEL")
             .unwrap_or_else(|_| "claude-sonnet-4-5".to_string());
-        tracing::info!(model = %model, "Tier-1/5 driver: anthropic (Mode A)");
+        tracing::info!(model = %model, "Tier-1/6/7 driver: anthropic (Mode A)");
         Arc::new(AnthropicApiDriver::new(model, key))
     } else if let (Some(url), Some(model)) =
         (env_nonempty("MOSSRAVEN_T1_BASE_URL"), env_nonempty("MOSSRAVEN_T1_MODEL"))
     {
-        tracing::info!(model = %model, base_url = %url, "Tier-1/5 driver: openai-compat (Mode A)");
+        tracing::info!(model = %model, base_url = %url, "Tier-1/6/7 driver: openai-compat (Mode A)");
         Arc::new(mossraven_dreamer::OpenAiCompatDriver::new(
             url,
             model,
             env_nonempty("MOSSRAVEN_T1_API_KEY"),
         ))
     } else if let Some(key) = env_nonempty("GEMINI_API_KEY") {
-        tracing::info!("Tier-1/5 driver: gemini free tier (Mode A)");
+        tracing::info!("Tier-1/6/7 driver: gemini free tier (Mode A)");
         Arc::new(mossraven_dreamer::OpenAiCompatDriver::gemini_default(key))
     } else if let Some(key) = env_nonempty("GROQ_API_KEY") {
-        tracing::info!("Tier-1/5 driver: groq free tier (Mode A)");
+        tracing::info!("Tier-1/6/7 driver: groq free tier (Mode A)");
         Arc::new(mossraven_dreamer::OpenAiCompatDriver::groq_default(key))
     } else {
         tracing::info!("no Tier-1 key set; Mode B (Claude Code drives via MCP)");
@@ -576,7 +576,7 @@ async fn build_context(pob_path: &str) -> Context {
                 .collect()
         })
         .unwrap_or_default();
-    let tier3: Arc<dyn mossraven_core::tier3::Tier3Backend> = if !remote_nodes.is_empty() {
+    let judge: Arc<dyn mossraven_core::judge::JudgeBackend> = if !remote_nodes.is_empty() {
         let bearer = std::env::var("MOSSRAVEN_NODE_BEARER")
             .unwrap_or_else(|_| "dev-bearer-change-me".to_string());
         tracing::info!(
@@ -584,7 +584,7 @@ async fn build_context(pob_path: &str) -> Context {
             urls = ?remote_nodes,
             "Tier-3 REMOTE backend active (mossraven-node pool)"
         );
-        Arc::new(mossraven_core::tier3::RemoteBackend::new(remote_nodes, bearer))
+        Arc::new(mossraven_core::judge::RemoteBackend::new(remote_nodes, bearer))
     } else {
         match parser {
         Some(p) => {
@@ -608,7 +608,7 @@ async fn build_context(pob_path: &str) -> Context {
                 // Spawn (n-1) more workers and assemble the pool. If any extra worker
                 // fails, fall back to the single-worker backend.
                 match build_pool_with_extras(p.clone(), pob_path, n).await {
-                    Ok(pool) => Arc::new(pool) as Arc<dyn mossraven_core::tier3::Tier3Backend>,
+                    Ok(pool) => Arc::new(pool) as Arc<dyn mossraven_core::judge::JudgeBackend>,
                     Err(e) => {
                         tracing::warn!(error = %e, "failed to grow LocalBackend pool; falling back to single-worker");
                         Arc::new(LocalBackend::new(p))
@@ -618,12 +618,12 @@ async fn build_context(pob_path: &str) -> Context {
                 Arc::new(LocalBackend::new(p))
             }
         }
-        None => Arc::new(NoopTier3),
+        None => Arc::new(NoopJudge),
         }
     };
     let tree_db = Arc::new(mossraven_pob::TreeDb::load(std::path::Path::new(pob_path)));
     let unique_db = Arc::new(mossraven_pob::UniqueDb::load(std::path::Path::new(pob_path)));
-    let engine = SearchEngine::new(archive.clone(), surrogate, tier3, gem_db, tree_db, unique_db);
+    let engine = SearchEngine::new(archive.clone(), surrogate, judge, gem_db, tree_db, unique_db);
 
     // Stamp every archive entry with the live PoB2 version (SPEC §9:
     // versioning — entries silently rot across league patches otherwise).
@@ -1000,7 +1000,7 @@ impl ControlSurface for ServiceControlSurface {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Ok(json!({
-            // 24 (was 10): Tier 5 nominates a 15-20 pool, so the selector
+            // 24 (was 10): Tier 6 nominates a 15-20 pool, so the selector
             // needs more raw material than the old single-stage curator did.
             "frontier": snap.into_iter().take(24).map(|(coords, entry)| json!({
                 "coords": coords,
@@ -1027,7 +1027,7 @@ impl ControlSurface for ServiceControlSurface {
                 // the LLM to re-encode it (a Claude-generated import code would
                 // be nonsense).
                 "pob_import_code": mossraven_archive::encode_pob_import_code(&entry.pob_xml),
-                // SPEC 1.1.2 cost layer — Tier 5/6 curate on value.
+                // SPEC 1.1.2 cost layer — Tiers 6/7 curate on value.
                 "estimated_cost_div": entry.estimated_cost_div,
                 "cost_band": entry.cost_band,
                 // SPEC 1.1.4 all-content viability gate — reported per entry
@@ -1037,7 +1037,7 @@ impl ControlSurface for ServiceControlSurface {
         }))
     }
 
-    /// Tier 5 — turn the current frontier into 5–10 curated finalists with prose.
+    /// Tiers 6+7 — pool selection then curation/authoring (SPEC §1.1.3).
     /// Routes through the active Tier-1 driver: AnthropicApiDriver in Mode A,
     /// the external MCP driver returns DriverIsExternal so the host (Claude
     /// Code / Cowork) does the synthesis itself.
@@ -1058,7 +1058,7 @@ impl ControlSurface for ServiceControlSurface {
             }
             f
         };
-        // ---- Tier 5 (SPEC §1.1.3): SELECT a pool of 15–20 candidates ----
+        // ---- Tier 6 (SPEC §1.1.3): SELECT a pool of 15–20 candidates ----
         let pool = match self.ctx.dreamer.select_pool(&slim_frontier).await {
             Ok(p) => p,
             Err(mossraven_dreamer::DreamerError::DriverIsExternal) => {
@@ -1071,7 +1071,7 @@ impl ControlSurface for ServiceControlSurface {
                     "instructions": "Mode B v2 (SPEC 1.1.3): first SELECT a pool of 15-20 candidates, then CURATE exactly 5 and write full guides. Finalist schema: {variant_id, title, one_liner, why_it_works, tags[], cell, key_stats[{label,value}], pob_import_code, guide:{leveling, endgame, loadout_swap, playtest_notes, checkpoints:[5 x {name, levels, gems, passives, gear}], bossing, mapping, cost_notes}}. Checkpoints are CP1 Acts1-2 (1-25), CP2 Act3+Cruel (25-45), CP3 maps entry (45-65), CP4 early maps+ascendancy (65-85), CP5 pinnacle-ready (85+). Curate on viability honesty, VALUE (effectiveness per divine -- giving up 1M DPS on a 10M build to save 90% cost is a WIN; spread cost bands), and playstyle diversity. Copy variant_id/cell/pob_import_code VERBATIM. When done, call save_finalists with {\"finalists\":[...]}.",
                 }));
             }
-            Err(e) => return Err(McpError::ToolFailed(format!("select_pool (tier 5): {e}"))),
+            Err(e) => return Err(McpError::ToolFailed(format!("select_pool (tier 6): {e}"))),
         };
 
         let entry_by_variant: std::collections::HashMap<String, &Value> = frontier
@@ -1085,7 +1085,7 @@ impl ControlSurface for ServiceControlSurface {
             .unwrap_or_default();
 
         // Mechanical pool gate: drop hallucinated ids + duplicates BEFORE
-        // spending Tier-6 tokens. Never trust what a string lookup can check.
+        // spending Tier-7 tokens. Never trust what a string lookup can check.
         let mut seen = std::collections::HashSet::new();
         let pool: Vec<mossraven_dreamer::PoolCandidate> = pool
             .into_iter()
@@ -1107,34 +1107,34 @@ impl ControlSurface for ServiceControlSurface {
                 "select_pool returned no valid candidates (all hallucinated/duplicate)".into(),
             ));
         }
-        tracing::info!(pool_size = pool.len(), "tier-5 selection pool gated");
+        tracing::info!(pool_size = pool.len(), "tier-6 selection pool gated");
 
-        // §3.6 adversarial critic on the pool — non-fatal: the Tier-6 stage
+        // §3.6 adversarial critic on the pool — non-fatal: the Tier-7 stage
         // re-grounds everything against the frontier anyway; log issues.
         if let Ok((ok, issues)) = self
             .ctx
             .dreamer
-            .review("tier5-pool", &json!({ "pool": &pool }), &slim_frontier)
+            .review("tier6-pool", &json!({ "pool": &pool }), &slim_frontier)
             .await
         {
             if !ok {
-                tracing::warn!(?issues, "tier-5 pool critic raised issues (non-fatal)");
+                tracing::warn!(?issues, "tier-6 pool critic raised issues (non-fatal)");
             }
         }
 
-        // ---- Tier 6 (SPEC §1.1.3): CURATE 5 + WRITE the guides ----
+        // ---- Tier 7 (SPEC §1.1.3): CURATE 5 + WRITE the guides ----
         // generate → mechanical gate → (retry once) → critic → (revise once)
         let mut finalists = self
             .ctx
             .dreamer
             .write_finalists(&pool, &slim_frontier)
             .await
-            .map_err(|e| McpError::ToolFailed(format!("write_finalists (tier 6): {e}")))?;
+            .map_err(|e| McpError::ToolFailed(format!("write_finalists (tier 7): {e}")))?;
         let pool_ids: std::collections::HashSet<&str> =
             pool.iter().map(|c| c.variant_id.as_str()).collect();
-        let issues = tier6_mechanical_issues(&finalists, &pool_ids, pool.len());
+        let issues = tier7_mechanical_issues(&finalists, &pool_ids, pool.len());
         if !issues.is_empty() {
-            tracing::warn!(?issues, "tier-6 mechanical gate failed; one retry with issues attached");
+            tracing::warn!(?issues, "tier-7 mechanical gate failed; one retry with issues attached");
             let mut annotated = slim_frontier.clone();
             if let Some(obj) = annotated.as_object_mut() {
                 obj.insert("reviewer_issues".into(), json!(issues));
@@ -1149,15 +1149,15 @@ impl ControlSurface for ServiceControlSurface {
                 .write_finalists(&pool, &annotated)
                 .await
                 .map_err(|e| McpError::ToolFailed(format!("write_finalists retry: {e}")))?;
-            let still = tier6_mechanical_issues(&finalists, &pool_ids, pool.len());
+            let still = tier7_mechanical_issues(&finalists, &pool_ids, pool.len());
             if !still.is_empty() {
-                tracing::warn!(?still, "tier-6 mechanical issues persist after retry; shipping with warnings");
+                tracing::warn!(?still, "tier-7 mechanical issues persist after retry; shipping with warnings");
             }
         } else if let Ok((ok, critic_issues)) = self
             .ctx
             .dreamer
             .review(
-                "tier6-finalists",
+                "tier7-finalists",
                 &json!({ "finalists": &finalists }),
                 &slim_frontier,
             )
@@ -1165,7 +1165,7 @@ impl ControlSurface for ServiceControlSurface {
         {
             // LLM critic only when mechanics passed (one revision budget total).
             if !ok && !critic_issues.is_empty() {
-                tracing::warn!(?critic_issues, "tier-6 critic raised issues; one revision");
+                tracing::warn!(?critic_issues, "tier-7 critic raised issues; one revision");
                 let mut annotated = slim_frontier.clone();
                 if let Some(obj) = annotated.as_object_mut() {
                     obj.insert("reviewer_issues".into(), json!(critic_issues));
@@ -1176,7 +1176,7 @@ impl ControlSurface for ServiceControlSurface {
                 }
                 match self.ctx.dreamer.write_finalists(&pool, &annotated).await {
                     Ok(revised) => finalists = revised,
-                    Err(e) => tracing::warn!(error = %e, "tier-6 revision failed; shipping the draft"),
+                    Err(e) => tracing::warn!(error = %e, "tier-7 revision failed; shipping the draft"),
                 }
             }
         }
@@ -1284,10 +1284,10 @@ impl ControlSurface for ServiceControlSurface {
         let scored = self
             .ctx
             .engine
-            .tier3
+            .judge
             .score(batch)
             .await
-            .map_err(|e| McpError::ToolFailed(format!("rescore_archive: tier3: {e}")))?;
+            .map_err(|e| McpError::ToolFailed(format!("rescore_archive: judge: {e}")))?;
         let by_id: std::collections::HashMap<String, _> = scored.into_iter().collect();
 
         let data_version = self.ctx.engine.state.lock().config.data_version.clone();
@@ -1349,10 +1349,10 @@ impl ControlSurface for ServiceControlSurface {
     }
 }
 
-/// SPEC §1.1.3 Tier-6 mechanical gate — requirements a string check can
+/// SPEC §1.1.3 Tier-7 mechanical gate — requirements a string check can
 /// verify; never spend critic tokens on these. Returns human-readable
 /// violations for the retry prompt.
-fn tier6_mechanical_issues(
+fn tier7_mechanical_issues(
     finalists: &[mossraven_dreamer::Finalist],
     pool_ids: &std::collections::HashSet<&str>,
     pool_size: usize,
@@ -1410,7 +1410,7 @@ fn persist_finalists(
 }
 
 /// Write finalists to `<data-dir>/finalists/<unix-ts>/`:
-/// `finalists.json` + optional `pool.json` (Tier-5 selection), plus per
+/// `finalists.json` + optional `pool.json` (Tier-6 selection), plus per
 /// finalist: markdown guide, **standalone HTML page** (SPEC §1.1 v2 —
 /// copy-paste into forums/site), the raw PoB XML (from the archive by
 /// variant_id, falling back to decoding the import code), and the
@@ -1761,16 +1761,16 @@ async fn build_pool_with_extras(
 
 // ----- No-op Tier-3 for when PoB2 isn't reachable -----
 
-struct NoopTier3;
+struct NoopJudge;
 
 #[async_trait]
-impl mossraven_core::tier3::Tier3Backend for NoopTier3 {
+impl mossraven_core::judge::JudgeBackend for NoopJudge {
     async fn score(
         &self,
         variants: Vec<(String, String)>,
     ) -> Result<
         Vec<(String, Result<mossraven_pob::BuildStats, String>)>,
-        mossraven_core::tier3::Tier3Error,
+        mossraven_core::judge::JudgeError,
     > {
         Ok(variants
             .into_iter()

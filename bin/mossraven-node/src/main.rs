@@ -133,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize the pool *sequentially*: PobHeadless::init() temporarily
     // flips process-global CWD (and restores it), so parallel inits would
-    // race. Same pattern as core::tier3::LocalBackend::with_pool.
+    // race. Same pattern as core::judge::LocalBackend::with_pool.
     let started = Instant::now();
     let mut pool = Vec::with_capacity(cfg.workers);
     for i in 0..cfg.workers {

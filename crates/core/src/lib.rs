@@ -11,9 +11,9 @@
 //!   → Tier 1 reads filled + empty cells → new hypothesis → repeat
 //! ```
 //!
-//! Tier 3 is pluggable behind [`tier3::Tier3Backend`].
+//! Tier 3 is pluggable behind [`tier3::JudgeBackend`].
 
-pub mod tier3;
+pub mod judge;
 
 use async_trait::async_trait;
 use mossraven_archive::{Archive, ArchiveEntry, CellCoords};
@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
-use tier3::Tier3Backend;
+use judge::JudgeBackend;
 
 pub mod cost;
 pub mod mutate;
@@ -231,8 +231,8 @@ fn simple_hash(s: &str) -> u64 {
 
 #[derive(Debug, Error)]
 pub enum CoreError {
-    #[error("tier-3 backend error: {0}")]
-    Tier3(String),
+    #[error("tier-4 judge backend error: {0}")]
+    Judge(String),
     #[error("surrogate error: {0}")]
     Surrogate(String),
     #[error("archive error: {0}")]
@@ -293,7 +293,7 @@ pub struct SearchState {
 pub struct SearchEngine {
     pub archive: Arc<Archive>,
     pub surrogate: Arc<dyn SurrogateProvider>,
-    pub tier3: Arc<dyn Tier3Backend>,
+    pub judge: Arc<dyn JudgeBackend>,
     pub state: Arc<Mutex<SearchState>>,
     /// PoB gem database (Gems.lua). Powers real gem swaps (gemId/skillId
     /// rewrite) and ground-truth damage_type cell labels. An empty db keeps
@@ -314,7 +314,7 @@ impl SearchEngine {
     pub fn new(
         archive: Arc<Archive>,
         surrogate: Arc<dyn SurrogateProvider>,
-        tier3: Arc<dyn Tier3Backend>,
+        judge: Arc<dyn JudgeBackend>,
         gem_db: Arc<mossraven_pob::GemDb>,
         tree_db: Arc<mossraven_pob::TreeDb>,
         unique_db: Arc<mossraven_pob::UniqueDb>,
@@ -322,7 +322,7 @@ impl SearchEngine {
         Self {
             archive,
             surrogate,
-            tier3,
+            judge,
             state: Arc::new(Mutex::new(SearchState::default())),
             gem_db,
             tree_db,
@@ -641,10 +641,10 @@ impl SearchEngine {
             .map(|p| (p.variant_id.clone(), p.pob_xml.clone()))
             .collect();
         let scored = self
-            .tier3
+            .judge
             .score(batch)
             .await
-            .map_err(|e| CoreError::Tier3(e.to_string()))?;
+            .map_err(|e| CoreError::Judge(e.to_string()))?;
 
         // 5. Place survivors that scored OK into the archive
         let proposal_by_id: HashMap<String, MutationProposal> = survivors
@@ -785,9 +785,9 @@ pub fn coords_from_stats(
 }
 
 /// Trait re-exported for symmetry with the workspace surface. (The actual
-/// trait lives in `tier3::Tier3Backend`; this alias is for external callers.)
+/// trait lives in `tier3::JudgeBackend`; this alias is for external callers.)
 #[async_trait]
-pub trait Tier3BackendExt: Send + Sync {
+pub trait JudgeBackendExt: Send + Sync {
     async fn score_batch(
         &self,
         variants: Vec<(String, String)>,

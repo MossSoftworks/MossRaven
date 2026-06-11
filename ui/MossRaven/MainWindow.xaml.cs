@@ -27,7 +27,7 @@ public partial class MainWindow : Window
     private int _t2Count;   // mutations proposed (sum of variants_proposed)
     private int _t3Count;   // PoB sims (sum of variants_scored)
     private int _t4Count;   // pruned (sum of variants_pruned — currently pre-sim)
-    // Tier-5 count is the live archive cell count, read directly from the service.
+    // Finalist count is the live archive cell count, read directly from the service.
 
     // Rolling per-tier iteration logs — kept short, last N lines only.
     private readonly System.Collections.Generic.List<string> _t1Lines = new();
@@ -171,7 +171,7 @@ public partial class MainWindow : Window
         await RefreshArchiveAsync();
     }
 
-    // ----- Tier-5 history (saved finalists runs) -----
+    // ----- Finalist history (saved finalists runs) -----
 
     private static string FinalistsRootDir() => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -394,7 +394,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Tier 5 — ask the service to synthesize finalists from the current
+    /// Tiers 6+7 — ask the service to synthesize finalists from the current
     /// frontier. The button stays disabled while the Anthropic call runs (it
     /// can take 10–30s for the curate pass at max_tokens=4096). On success
     /// the right pane re-renders as the curated list; on failure we log to
@@ -440,7 +440,7 @@ public partial class MainWindow : Window
             {
                 BuildListHint.Text = payloadJson.Contains("not implemented", StringComparison.OrdinalIgnoreCase)
                     || payloadJson.Contains("DriverIsExternal", StringComparison.OrdinalIgnoreCase)
-                    ? "Tier 5 needs MOSSRAVEN_ANTHROPIC_API_KEY in the service env (Mode A), or run from Claude Code (Mode B). Click Refresh to restore the archive view."
+                    ? "Tiers 6+7 need MOSSRAVEN_ANTHROPIC_API_KEY in the service env (Mode A), or run from Claude Code (Mode B). Click Refresh to restore the archive view."
                     : $"synthesize failed: {msg}";
             });
             return;
@@ -676,7 +676,7 @@ public partial class MainWindow : Window
             T2Log.Text = _t2Lines.Count == 0 ? "(no generations yet)" : string.Join('\n', _t2Lines);
             T3Log.Text = _t3Lines.Count == 0 ? "(no sims yet)" : string.Join('\n', _t3Lines);
             T4Log.Text = _t4Lines.Count == 0
-                ? "(no prunings yet — currently pre-sim pruning only; smart post-sim pruning is next session)"
+                ? "(no prunings yet — legality gates + interest pruning report here)"
                 : string.Join('\n', _t4Lines);
         });
     }

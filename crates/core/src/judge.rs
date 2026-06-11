@@ -1,7 +1,7 @@
-//! Tier-3 backends — local (in-process pob-headless via Rayon) and remote
+//! Tier-4 backends — local (in-process pob-headless via Rayon) and remote
 //! (HTTP fan-out to a pool of `mossraven-node` URLs).
 //!
-//! Both implement [`Tier3Backend`]. Selection is by config; v1 ships the
+//! Both implement [`JudgeBackend`]. Selection is by config; v1 ships the
 //! `local` impl and a skeletal `remote` impl that's wired but not benchmarked.
 
 use async_trait::async_trait;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum Tier3Error {
+pub enum JudgeError {
     #[error("pob engine error: {0}")]
     Pob(String),
     #[error("http error: {0}")]
@@ -33,16 +33,16 @@ pub enum Tier3Config {
 }
 
 #[async_trait]
-pub trait Tier3Backend: Send + Sync {
+pub trait JudgeBackend: Send + Sync {
     async fn score(
         &self,
         variants: Vec<(String, String)>,
-    ) -> Result<Vec<(String, Result<BuildStats, String>)>, Tier3Error>;
+    ) -> Result<Vec<(String, Result<BuildStats, String>)>, JudgeError>;
 }
 
 // -------- Local --------
 
-/// In-process Tier-3 backend. Holds a pool of PobParsers; each parser owns
+/// In-process Tier-4 backend. Holds a pool of PobParsers; each parser owns
 /// its own OS thread + Lua VM (mlua::Lua is `!Send`, so we can't share one
 /// across worker threads — only across async tasks that all hit the same
 /// dedicated thread). With pool_size > 1, variants are round-robined across
@@ -89,11 +89,11 @@ impl LocalBackend {
 }
 
 #[async_trait]
-impl Tier3Backend for LocalBackend {
+impl JudgeBackend for LocalBackend {
     async fn score(
         &self,
         variants: Vec<(String, String)>,
-    ) -> Result<Vec<(String, Result<BuildStats, String>)>, Tier3Error> {
+    ) -> Result<Vec<(String, Result<BuildStats, String>)>, JudgeError> {
         use futures::future::join_all;
 
         let n = self.pool.len().max(1);
@@ -159,13 +159,13 @@ impl RemoteBackend {
 }
 
 #[async_trait]
-impl Tier3Backend for RemoteBackend {
+impl JudgeBackend for RemoteBackend {
     async fn score(
         &self,
         variants: Vec<(String, String)>,
-    ) -> Result<Vec<(String, Result<BuildStats, String>)>, Tier3Error> {
+    ) -> Result<Vec<(String, Result<BuildStats, String>)>, JudgeError> {
         let batch_id = format!("b-{}", variants.len());
-        let url = self.pick_node(&batch_id).ok_or(Tier3Error::NoHealthyNodes)?;
+        let url = self.pick_node(&batch_id).ok_or(JudgeError::NoHealthyNodes)?;
 
         let req = ScoreBatchRequest {
             batch_id: batch_id.clone(),

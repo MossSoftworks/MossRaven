@@ -17,7 +17,7 @@ No OpenAI dependency anywhere.
 ### 1.1 End state — definition of done (v2, 2026-06-11)
 
 A completed discovery session delivers **exactly 5 curated builds**, chosen by
-Tier 6 from a Tier-5 **selection pool of 15–20 candidates** (§3.1a separates
+Tier 7 from a Tier-6 **selection pool of 15–20 candidates** (§1.1.3 separates
 selection from authorship). Each curated build ships:
 
 1. **Current-patch PoB2 XML + import code** — importable into desktop PoB2,
@@ -80,14 +80,14 @@ legality IS filtering** — the engine refuses to archive over-budget trees
 
 Where cost lives in the pipeline (decided 2026-06-11):
 
-1. **Estimated at scoring time** (Tier 3 adjacency) — a pure function of the
+1. **Estimated at scoring time** (Tier-4 judge adjacency) — a pure function of the
    build XML: uniques classed into price bands, rares banded by mod density,
    summed into `estimated_cost_div` + `cost_band` ∈
    {budget ≤ 5 div · mid ≤ 30 · expensive ≤ 150 · mirror-tier > 150}.
    Stamped on every `ArchiveEntry`.
 2. **Surfaced everywhere** — frontier JSON, viability report, build cards,
    guides.
-3. **Curated on at Tier 6** — the value rule (§1.1 item 7) is an explicit
+3. **Curated on at Tier 7** — the value rule (§1.1 item 7) is an explicit
    curation criterion: the 5 finalists should span cost bands when the pool
    allows, and every guide writes its cost reality plus the cheapest
    acceptable variant.
@@ -95,22 +95,22 @@ Where cost lives in the pipeline (decided 2026-06-11):
 v1 prices are HEURISTIC (no live market). Follow-up: poe.ninja PoE2 economy
 API as an env-gated live source; heuristic stays as offline fallback.
 
-#### 1.1.3 Tier-6 curation (selection ≠ authorship)
+#### 1.1.3 Tier-7 curation (selection ≠ authorship)
 
-Tier 5 SELECTS a pool: 15–20 candidates from the frontier, each a one-line
-pitch + stats + cost — cheap tokens, breadth over depth. Tier 6 CURATES and
+Tier 6 SELECTS a pool: 15–20 candidates from the frontier, each a one-line
+pitch + stats + cost — cheap tokens, breadth over depth. Tier 7 CURATES and
 WRITES: picks exactly 5 balancing power, cost spread, playstyle diversity,
 and viability honesty, then writes the full §1.1 guide set per pick. Both
-tiers run on the same Tier-1/5 driver chain (Anthropic or OpenAI-compat).
+tiers run on the same Tier-1/6/7 driver chain (Anthropic or OpenAI-compat).
 Adversarial critique (§3.6) wraps both stages.
 
 Status (2026-06-11): the loop produces archives + finalists end-to-end (live
-runs 1781112410 → 1781127587). Tier-6 split, cost layer, HTML output, and
+runs 1781112410 → 1781127587). Tier-6/7 split, cost layer, HTML output, and
 adversarial critics are the active build-out.
 
 Tracked implications:
 
-- Tier-5/6 synthesis must emit guide prose per §1.1 (checkpoints, bossing,
+- Tier-6/7 synthesis must emit guide prose per §1.1 (checkpoints, bossing,
   mapping), not just stats and an import code.
 - Variant representation and mutation operators must become weapon-set aware,
   so clear/boss duality is *searched*, not bolted on afterwards. (DONE:
@@ -148,12 +148,21 @@ Tier 2 — THE SURROGATE                     [thousands of calls / session]
    Cerebras (default) | local Ollama/llama.cpp | Groq | OpenRouter.
    Swap = change base_url + model. Same code.
         │
-Tier 3 — THE JUDGE                         [100k+ evals / session]
+Tier 3 — THE VALUE MODEL                    [millions of scores / session]
+   Learned pre-ranker (GBT first; docs/nn-direction.md). Trained on OUR
+   OWN Tier-4 evaluations (the §3.7 data factory). Scores candidate
+   mutations in microseconds so only the top slice reaches the
+   expensive judge — 100–1000× search width, zero honesty risk
+   (nothing enters the archive un-simmed). Until the corpus is big
+   enough to train, this tier is PASS-THROUGH.
+        │
+Tier 4 — THE JUDGE                         [100k+ evals / session]
    pob-headless. Deterministic fitness: DPS, EHP, sustain, resist caps,
    breakpoints. CPU-bound Lua, NOT MCP-wrapped (inner loop hammers it).
    No Claude, no network in this tier (in local mode).
    Backend swappable (see §4.3): `local` (in-process, host cores)
                               OR `remote` (POSTs to mossraven-node URL).
+   Every eval is LOGGED to the training corpus (§3.7).
         │
 MAP-Elites ARCHIVE  ← THE SEARCH OUTPUT
    Grid keyed on archetype axes (damage type × defense layer ×
@@ -161,27 +170,40 @@ MAP-Elites ARCHIVE  ← THE SEARCH OUTPUT
    empty cell = undiscovered niche. Persisted to disk; resumes across
    sessions; readable by Tier 1.
         │
-Tier 4 — THE PRUNE                          [post-sim gates]
+Tier 5 — THE PRUNE                          [post-sim gates]
    Mechanical legality + viability: passive point budget (filtering),
    stat floors (reported), label normalization. No LLM.
         │
-Tier 5 — THE SELECTOR                       [a few calls / session]
+Tier 6 — THE SELECTOR                       [a few calls / session]
    Reads the frontier, nominates a POOL of 15–20 candidates
    (one-line pitch + stats + cost each). Breadth, not prose.
         │
-Tier 6 — THE CURATOR-AUTHOR                 [a few quality calls / session]
+Tier 7 — THE CURATOR-AUTHOR                 [a few quality calls / session]
    Picks exactly 5 from the pool (power × cost spread × playstyle
    diversity × viability honesty), then writes the full guide set
    per pick (§1.1: 5 checkpoints, bossing, mapping, cost/value).
    Outputs: pool.json, finalists.json, .md + .html + .xml + import code.
 ```
 
-Every LLM-bearing tier (1, 2, 5, 6) is wrapped by an **adversarial critic
-pass** (§3.6).
+Every LLM-bearing tier (1, 2, 6, 7) is wrapped by an **adversarial critic
+pass** (§3.6). Tier 3 is learned but not an LLM — its "critic" is Tier 4
+itself (every ranked candidate that gets simmed is a labeled test of the
+ranker).
+
+### 3.7 The data factory (Tier-4 eval corpus)
+
+Every Tier-4 evaluation appends one JSONL row to
+`%APPDATA%/Moss/MossRaven/data/corpus/evals-<date>.jsonl`:
+build features (class/ascendancy/level, main skill + support count, allocated
+node ids, equipped uniques/bases, estimated cost, passive points) + the
+PoB-scored labels (DPS/EHP/ES/resists) + the pob2 version stamp. On by
+default (`MOSSRAVEN_CORPUS=0` disables). This corpus IS the Tier-3 training
+set — `scripts/train-value-model.py` consumes it. Patch boundaries matter:
+train per `pob2_version`, never across.
 
 ### 3.2 Why the tiers split this way
 
-Cerebras (or any LLM-throughput accelerator) only helps where an LLM is in the hot loop — Tier 2. Tier 3 is CPU-bound Lua and parallelizes across cores, not silicon-LLM. Claude stays at Tier 1 because Tier 2's open model is dumber — fine for pruning, not for the final verdict.
+Cerebras (or any LLM-throughput accelerator) only helps where an LLM is in the hot loop — Tier 2. Tier 4 (the judge) is CPU-bound Lua and parallelizes across cores, not silicon-LLM; Tier 3 (the value model) is a learned regressor that runs in microseconds on CPU. Claude stays at Tier 1 because Tier 2's open model is dumber — fine for pruning, not for the final verdict.
 
 ### 3.3 The loop (cascade evaluator, FunSearch-style)
 
@@ -189,7 +211,8 @@ Cerebras (or any LLM-throughput accelerator) only helps where an LLM is in the h
 seed concept (Tier 1)
   → mutate variant space
   → Tier 2 surrogate: cheap-filter for plausible + novel       (prune)
-  → Tier 3 pob-headless: hard numbers on survivors only       (expensive)
+  → Tier 3 value model: pre-rank thousands, keep the top slice   (learned)
+  → Tier 4 pob-headless: hard numbers on survivors only       (expensive)
   → place in MAP-Elites cell IF it beats that niche's current elite
   → Tier 1 reads filled + empty cells → new hypothesis → repeat
 ```
@@ -207,11 +230,11 @@ Never more than one round (free-tier token budget; diminishing returns).
 | Tier | Critic checks | Gate |
 |---|---|---|
 | T1 hypothesis | mechanics coherence (does the concept's scaling exist in PoE2? are named skills/items real per the datamined vocab?) | always |
-| T2 mutations | known no-ops (support gem levels), illegal ops, duplicate variants, out-of-budget allocations | env-gated `MOSSRAVEN_T2_CRITIC=1` (token cost vs. Tier-3 already being ground truth) |
-| T5 pool | selection diversity (cost bands, playstyles, classes), pitch claims vs. attached stats | always |
-| T6 guides | fact-check prose against the actual build: every gem named must exist in the XML; viability band quoted correctly; cost claims match the estimate; checkpoint passives must be real notables | always |
+| T2 mutations | known no-ops (support gem levels), illegal ops, duplicate variants, out-of-budget allocations | env-gated `MOSSRAVEN_T2_CRITIC=1` (token cost vs. Tier-4 already being ground truth) |
+| T6 pool | selection diversity (cost bands, playstyles, classes), pitch claims vs. attached stats | always |
+| T7 guides | fact-check prose against the actual build: every gem named must exist in the XML; viability band quoted correctly; cost claims match the estimate; checkpoint passives must be real notables | always |
 
-The T6 critic is the highest-value adversary: guide hallucination is the
+The T7 critic is the highest-value adversary: guide hallucination is the
 visible product flaw. Mechanical pre-checks (gem-name-in-XML, band-string
 match) run in Rust BEFORE the LLM critic — never spend tokens on what a
 string search can catch.
@@ -262,7 +285,7 @@ OpenAI-compatible chat completions. Swap = change `base_url` + `model` in config
 | **Local Ollama** | `http://localhost:11434/v1` | Cost-zero, no rate cap. CPU-only inference is slower; only useful if homelab GPU exists. |
 | **Groq / OpenRouter / etc.** | provider URL | Fallback if Cerebras throttles. |
 
-### 4.3 Tier 3 backend — local or remote (`Tier3Backend` trait)
+### 4.3 Tier-4 judge backend — local or remote (`JudgeBackend` trait, historically `Tier3Backend`)
 
 **Default (v1): `local`.** In-process `pob-headless` fans across host machine's cores via Rayon. Zero network. Good for single-user gaming-rig deployment.
 
@@ -302,7 +325,7 @@ Two files in install dir, one Start Menu shortcut.
 - Concept input (free-text "what kind of build are we exploring")
 - Live MAP-Elites heatmap (cells colored by power, empties highlighted)
 - Drill-into-cell view (PoB code, key stats, mutation lineage)
-- Run controls (start/pause/resume; switch surrogate provider; switch Tier 3 to remote)
+- Run controls (start/pause/resume; switch surrogate provider; switch Tier-4 judge to remote)
 - Config: API keys, Cerebras endpoint, remote node-pool URLs
 
 ---
@@ -332,7 +355,7 @@ GET /health
 
 **Distribution:** single static binary per platform (`mossraven-node-linux-x64`, `mossraven-node-windows-x64`). Operator clones `PathOfBuilding-PoE2` into a sibling `vendor/` dir and runs the binary with a config file pointing at it. No Lua install required (pob-headless embeds it via mlua).
 
-**v1 status:** scaffolded with a working `/health` endpoint and a stub `/score` that echoes back zeros. Real scoring lands in a follow-up once the in-process Tier 3 is validated against desktop PoB2.
+**v1 status:** scaffolded with a working `/health` endpoint and a stub `/score` that echoes back zeros. Real scoring lands in a follow-up once the in-process Tier-4 judge is validated against desktop PoB2.
 
 ---
 
@@ -374,7 +397,7 @@ GET /health
 ## 8. Build order
 
 1. **`pob` crate end-to-end.** Net-new, highest risk. `cargo build --release` clean against vendored PoB2; expose `score_build(pob_code) -> stats`. **Validate numbers match desktop PoB2 on a known build before anything else.** This is the gate everything else stands on.
-2. **Tier-3 parallelism.** Batch-score N variants across host cores; benchmark evals/sec/core/node.
+2. **Tier-4 (judge) parallelism.** Batch-score N variants across host cores; benchmark evals/sec/core/node.
 3. **MAP-Elites archive.** Define archetype axes + cell-placement logic + disk persistence + resume. Core data structure; get it right early. **Axes are tunable**, not a one-shot guess — treat as empirical.
 4. **Tier-2 surrogate.** `SurrogateProvider` trait + Cerebras impl first (free tier prototype). Then confirm a local Ollama swap works by config alone.
 5. **Tier-1 + dual drive.** `TierOneDriver` trait with both Mode A (API) and Mode B (MCP server for Claude Code / Cowork). Wire poe2-mcp / poe2 in here for grounding.
@@ -418,7 +441,7 @@ Steps 1, 3, 6 are independently testable in isolation. 2 depends on 1. 4 + 5 dep
 ## 10. First task (Claude Code, this turn)
 
 1. **Verify-on-entry:** deep-dive [SFerenczy/poe2-agent](https://github.com/SFerenczy/poe2-agent)'s `pob` module. Report findings as `docs/pob-deepdive.md`. Decide fork-and-trim vs cleanroom mlua wrapper and explain why.
-2. **Scaffold the Rust workspace** per §7.1 with all crates, both binaries (`mossraven-service`, `mossraven-node`), trait definitions for `TierOneDriver` / `SurrogateProvider` / `Tier3Backend`, and stubs that `cargo build --workspace --release` cleanly.
+2. **Scaffold the Rust workspace** per §7.1 with all crates, both binaries (`mossraven-service`, `mossraven-node`), trait definitions for `TierOneDriver` / `SurrogateProvider` / `JudgeBackend` (historically `Tier3Backend`), and stubs that `cargo build --workspace --release` cleanly.
 3. **Scaffold the WPF shell** per §5 (MossPost pattern, single-file publish settings) with a minimal MCP-over-stdio client stub that launches `mossraven-service.exe` and reads its `read_archive()` response.
 4. **Vendor PoB2:** `git clone` `PathOfBuildingCommunity/PathOfBuilding-PoE2` into `vendor/`. Add `vendor/` to `.gitignore`.
 5. **Write `README.md`** documenting how to build, run, and benchmark each tier and each drive mode in isolation.

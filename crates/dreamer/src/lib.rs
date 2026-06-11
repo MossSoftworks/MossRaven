@@ -120,7 +120,7 @@ pub struct CheckpointGuide {
 }
 
 /// SPEC §1.1 build guide — what makes a finalist *playable*, not just scored.
-/// All fields are prose written by Tier 6. Serde-defaulted so pre-guide
+/// All fields are prose written by Tier 7. Serde-defaulted so pre-guide
 /// finalist JSON (and conservative models) still parse.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BuildGuide {
@@ -160,7 +160,7 @@ pub struct BuildGuide {
     pub cost_notes: String,
 }
 
-/// Tier-5 selection-pool candidate (SPEC §1.1.3): a nomination, not a guide.
+/// Tier-6 selection-pool candidate (SPEC §1.1.3): a nomination, not a guide.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolCandidate {
     pub variant_id: String,
@@ -194,7 +194,7 @@ pub trait TierOneDriver: Send + Sync {
     ) -> Result<Vec<Finalist>, DreamerError> {
         Err(DreamerError::NotImplemented)
     }
-    /// Tier 5 (SPEC §1.1.3) — SELECT a pool of 15–20 candidates from the
+    /// Tier 6 (SPEC §1.1.3) — SELECT a pool of 15–20 candidates from the
     /// frontier. Breadth, not prose: one-line pitches only.
     async fn select_pool(
         &self,
@@ -202,7 +202,7 @@ pub trait TierOneDriver: Send + Sync {
     ) -> Result<Vec<PoolCandidate>, DreamerError> {
         Err(DreamerError::NotImplemented)
     }
-    /// Tier 6 (SPEC §1.1.3) — CURATE exactly 5 from the pool and WRITE the
+    /// Tier 7 (SPEC §1.1.3) — CURATE exactly 5 from the pool and WRITE the
     /// full guide set per pick (5 checkpoints, bossing, mapping, cost notes).
     async fn write_finalists(
         &self,
@@ -382,9 +382,9 @@ mod prompts {
         (system, user)
     }
 
-    /// Tier 5 v2 — SELECT a pool, don't write guides.
+    /// Tier 6 v2 — SELECT a pool, don't write guides.
     pub fn select_pool(frontier_snapshot: &Value) -> (&'static str, String) {
-        let system = "You are a Path of Exile 2 build SELECTOR (Tier 5 of a discovery \
+        let system = "You are a Path of Exile 2 build SELECTOR (Tier 6 of a discovery \
                       pipeline). The engine produced a frontier of mechanically-scored \
                       builds. NOMINATE a pool of 15–20 candidates worth a curator's \
                       attention. You are NOT writing guides — one-line pitches only. \
@@ -404,9 +404,9 @@ mod prompts {
         (system, user)
     }
 
-    /// Tier 6 v2 — CURATE 5 from the pool and WRITE the full SPEC §1.1 guides.
+    /// Tier 7 v2 — CURATE 5 from the pool and WRITE the full SPEC §1.1 guides.
     pub fn write_finalists(pool: &[super::PoolCandidate], frontier_snapshot: &Value) -> (&'static str, String) {
-        let system = "You are a Path of Exile 2 build CURATOR-AUTHOR (Tier 6). From the \
+        let system = "You are a Path of Exile 2 build CURATOR-AUTHOR (Tier 7). From the \
                       selection pool, pick EXACTLY 5 builds and write their complete \
                       guides. \
                       \n\nCuration criteria, in order: (1) all-content viability honesty — \
@@ -432,7 +432,7 @@ mod prompts {
                       `playtest_notes` (what PoB can't model — never claim it's fun).";
         let pool_json = serde_json::to_string_pretty(pool).unwrap_or_default();
         let user = format!(
-            "Selection pool (Tier 5 output):\n{pool_json}\n\n\
+            "Selection pool (Tier 6 output):\n{pool_json}\n\n\
              Frontier ground truth (stats / viability / cost per variant_id):\n{}\n\n\
              Return JSON of shape:\n\
              {{\n  \"finalists\": [\n    {{\n      \"variant_id\": \"<from pool>\",\n      \"title\": \"...\",\n      \"one_liner\": \"...\",\n      \"why_it_works\": \"...\",\n      \"tags\": [\"...\"],\n      \"cell\": \"<copy>\",\n      \"key_stats\": [{{\"label\": \"DPS\", \"value\": \"...\"}}, {{\"label\": \"EHP\", \"value\": \"...\"}}, {{\"label\": \"Cost\", \"value\": \"<band>\"}}],\n      \"guide\": {{\n        \"leveling\": \"summary\",\n        \"endgame\": \"...\",\n        \"loadout_swap\": \"...\",\n        \"playtest_notes\": \"...\",\n        \"checkpoints\": [\n          {{\"name\": \"CP1 — Acts 1–2\", \"levels\": \"1–25\", \"gems\": \"...\", \"passives\": \"...\", \"gear\": \"...\"}},\n          {{\"name\": \"CP2 — Act 3 + Cruel entry\", \"levels\": \"25–45\", \"gems\": \"...\", \"passives\": \"...\", \"gear\": \"...\"}},\n          {{\"name\": \"CP3 — Maps entry\", \"levels\": \"45–65\", \"gems\": \"...\", \"passives\": \"...\", \"gear\": \"...\"}},\n          {{\"name\": \"CP4 — Early maps + ascendancy\", \"levels\": \"65–85\", \"gems\": \"...\", \"passives\": \"...\", \"gear\": \"...\"}},\n          {{\"name\": \"CP5 — Pinnacle-ready\", \"levels\": \"85+\", \"gems\": \"...\", \"passives\": \"...\", \"gear\": \"...\"}}\n        ],\n        \"bossing\": \"...\",\n        \"mapping\": \"...\",\n        \"cost_notes\": \"...\"\n      }}\n    }}\n  ]\n}}",

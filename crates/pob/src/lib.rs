@@ -14,7 +14,7 @@
 //!   flips the process-global CWD and restores it. A **pool** of parsers in
 //!   one process is safe only under the pooled pattern: every parser points
 //!   at the **same** PoB2 path, given as an **absolute** path, and parsers
-//!   are initialized **sequentially** (see `core::tier3::LocalBackend::with_pool`
+//!   are initialized **sequentially** (see `core::judge::LocalBackend::with_pool`
 //!   and `mossraven-node`). Concurrent scoped flips to the same target are
 //!   benign; never rely on process CWD elsewhere while parsers are live.
 //! - The vendored PoB2 Lua loads a `lua-utf8` stub we provide because LuaJIT
