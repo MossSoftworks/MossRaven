@@ -296,11 +296,37 @@ impl Archive {
     /// delete+recreate). Observed in the field: a daemon spawning during a
     /// save window logged "file not found" while 10 cells sat on disk.
     pub fn load(path: &Path) -> Result<Self, ArchiveError> {
-        for attempt in 0..2 {
+        // Field incident (2026-06-11): WPF-spawned daemons read NotFound for
+        // an archive.json that demonstrably existed (correct absolute path,
+        // mtime hours old) — transient OS-level invisibility (AV/indexer
+        // lock at session start is the prime suspect; the same binary +
+        // path loaded fine minutes later). When the PARENT DIR exists,
+        // a missing/corrupt file is suspicious — retry hard and log the
+        // real io error instead of silently starting fresh.
+        let dir_exists = path.parent().map(|d| d.exists()).unwrap_or(false);
+        let attempts = if dir_exists { 6 } else { 2 };
+        for attempt in 0..attempts {
             match Self::load_once(path) {
                 LoadOutcome::Loaded(a) => return Ok(a),
-                LoadOutcome::Missing | LoadOutcome::Corrupt if attempt == 0 => {
-                    std::thread::sleep(std::time::Duration::from_millis(150));
+                outcome @ (LoadOutcome::Missing | LoadOutcome::Corrupt)
+                    if attempt + 1 < attempts =>
+                {
+                    if dir_exists {
+                        tracing::warn!(
+                            ?path,
+                            attempt,
+                            outcome = match outcome {
+                                LoadOutcome::Missing => "missing",
+                                _ => "unreadable",
+                            },
+                            "archive dir exists but file unreadable; retrying"
+                        );
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(if dir_exists {
+                        400
+                    } else {
+                        150
+                    }));
                 }
                 LoadOutcome::Missing => {
                     tracing::info!(?path, "archive file not found; starting fresh");
@@ -319,7 +345,10 @@ impl Archive {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LoadOutcome::Missing,
-            Err(_) => return LoadOutcome::Corrupt,
+            Err(e) => {
+                tracing::warn!(?path, error = %e, kind = ?e.kind(), "archive read failed");
+                return LoadOutcome::Corrupt;
+            }
         };
         match serde_json::from_str::<ArchiveSnapshot>(&text) {
             Ok(snap) => {
@@ -356,7 +385,21 @@ impl Archive {
     pub fn refresh_from_disk(&self, path: &Path) {
         let disk_mtime = match file_mtime(path) {
             Some(m) => m,
-            None => return, // no file — nothing newer to merge
+            None => {
+                // A daemon that started EMPTY and still can't see the file is
+                // the pathological blank-UI case — say so loudly so the next
+                // log scan catches it (silent return hid a morning of
+                // failures, 2026-06-11).
+                if self.cells.read().is_empty()
+                    && path.parent().map(|d| d.exists()).unwrap_or(false)
+                {
+                    tracing::warn!(
+                        ?path,
+                        "archive empty in memory and file not visible on disk; will retry on next read"
+                    );
+                }
+                return;
+            }
         };
         {
             let loaded = self.loaded_mtime.lock();

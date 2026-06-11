@@ -610,11 +610,58 @@ public partial class MainWindow : Window
         {
             var json = await _service.ReadArchiveAsync();
             RenderArchive(json);
+            ScheduleEmptyArchiveRetry(json);
         }
         catch (Exception ex)
         {
             AppendLog($"[archive refresh error] {ex.Message}");
         }
+    }
+
+    private int _emptyRetryCount;
+
+    /// <summary>
+    /// Self-heal for the blank-pane incident (2026-06-11): a freshly spawned
+    /// service can transiently fail to see archive.json (OS-level lock at
+    /// session start) and report 0 cells while the file sits on disk. The
+    /// service self-heals on its next read once the file is visible — so if
+    /// we rendered EMPTY but the file exists, re-poll a few times with
+    /// backoff instead of leaving the user staring at nothing.
+    /// </summary>
+    private void ScheduleEmptyArchiveRetry(string archiveJson)
+    {
+        bool empty;
+        try
+        {
+            using var doc = JsonDocument.Parse(archiveJson);
+            empty = !(doc.RootElement.TryGetProperty("cells_filled", out var cf) && cf.GetInt32() > 0);
+        }
+        catch
+        {
+            empty = true;
+        }
+        var dataDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "Moss", "MossRaven", "data");
+        var archiveOnDisk = File.Exists(Path.Combine(dataDir, "archive.json"));
+        if (!empty || !archiveOnDisk)
+        {
+            _emptyRetryCount = 0;
+            return;
+        }
+        if (_emptyRetryCount >= 3)
+        {
+            AppendLog("[archive] still empty after retries — archive.json exists on disk but the service can't read it; check the service log");
+            return;
+        }
+        var delay = TimeSpan.FromSeconds(5 * Math.Pow(3, _emptyRetryCount)); // 5s, 15s, 45s
+        _emptyRetryCount++;
+        AppendLog($"[archive] service reports 0 cells but archive.json exists — auto-retrying in {delay.TotalSeconds:N0}s ({_emptyRetryCount}/3)");
+        _ = System.Threading.Tasks.Task.Run(async () =>
+        {
+            await System.Threading.Tasks.Task.Delay(delay);
+            await Dispatcher.InvokeAsync(async () => await RefreshArchiveAsync());
+        });
     }
 
     private void UpdateTierCounters()
