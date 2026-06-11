@@ -152,6 +152,14 @@ public sealed class Settings
             env["MOSSRAVEN_NINJA_ITEM_URL"] = NinjaItemUrl;
         if (!CorpusEnabled)
             env["MOSSRAVEN_CORPUS"] = "0";
+        // Live tree view: engine writes each generation's best build to the
+        // PoB live-link handoff beside the PoB exe.
+        if (!string.IsNullOrWhiteSpace(PobInstallPath) && System.IO.File.Exists(PobInstallPath))
+        {
+            var dir = System.IO.Path.GetDirectoryName(PobInstallPath);
+            if (!string.IsNullOrEmpty(dir))
+                env["MOSSRAVEN_LIVE_VIEW_DIR"] = dir;
+        }
 
         return env;
     }

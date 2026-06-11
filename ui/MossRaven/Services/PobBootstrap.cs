@@ -25,6 +25,87 @@ public static class PobBootstrap
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "MossRaven", "PoB2");
 
+    /// <summary>Marker + snippet appended to the LOCAL PoB copy's
+    /// Modules/Main.lua: every ~0.5s it checks mossraven-live.sig next to the
+    /// PoB exe; when the counter changes it loads mossraven-live.xml into the
+    /// running instance (SetMode BUILD). This is what makes clicks load into
+    /// the LIVE window and lets the tree light up during search. We patch the
+    /// user's local copy only — never redistributed.</summary>
+    private const string LiveLinkMarker = "-- MossRaven live-link";
+    private const string LiveLinkLua = @"
+-- MossRaven live-link (appended by MossRaven; safe to delete)
+do
+    local mrOrigOnFrame = main.OnFrame
+    local mrTick, mrLastSig = 0, nil
+    function main:OnFrame(...)
+        mrOrigOnFrame(self, ...)
+        mrTick = mrTick + 1
+        if mrTick >= 30 then
+            mrTick = 0
+            local sf = io.open(""mossraven-live.sig"", ""rb"")
+            if sf then
+                local sig = sf:read(""*l"")
+                sf:close()
+                if sig and sig ~= mrLastSig then
+                    mrLastSig = sig
+                    local xf = io.open(""mossraven-live.xml"", ""rb"")
+                    if xf then
+                        local xml = xf:read(""*a"")
+                        xf:close()
+                        if xml and #xml > 100 then
+                            self:SetMode(""BUILD"", false, ""MossRaven Live"", xml)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+";
+
+    /// <summary>Append the live-link watcher to the runtime's Main.lua once.</summary>
+    public static void EnsureLiveLink(string exePath, Action<string> log)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(exePath) ?? RuntimeDir;
+            var mainLua = Path.Combine(dir, "Modules", "Main.lua");
+            if (!File.Exists(mainLua))
+            {
+                log("[pob-live] Modules/Main.lua not found — live-link unavailable for this PoB layout");
+                return;
+            }
+            var text = File.ReadAllText(mainLua);
+            if (!text.Contains(LiveLinkMarker))
+            {
+                File.AppendAllText(mainLua, "\n" + LiveLinkLua);
+                log("[pob-live] live-link injected into local PoB copy (click + search now load into the live window)");
+            }
+        }
+        catch (Exception ex)
+        {
+            log($"[pob-live] injection failed: {ex.Message}");
+        }
+    }
+
+    private static long _liveCounter = Environment.TickCount64;
+
+    /// <summary>Push a build into the RUNNING embedded PoB via the handoff.</summary>
+    public static void PushLive(string exePath, string xml, Action<string> log)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(exePath) ?? RuntimeDir;
+            File.WriteAllText(Path.Combine(dir, "mossraven-live.xml"), xml);
+            File.WriteAllText(Path.Combine(dir, "mossraven-live.sig"),
+                (++_liveCounter).ToString());
+        }
+        catch (Exception ex)
+        {
+            log($"[pob-live] push failed: {ex.Message}");
+        }
+    }
+
     /// <summary>Find an already-bootstrapped PoB2 exe, or null.</summary>
     public static string? FindExistingExe()
     {

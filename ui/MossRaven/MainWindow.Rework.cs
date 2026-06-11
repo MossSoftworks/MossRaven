@@ -243,6 +243,7 @@ public partial class MainWindow
             Services.SettingsService.Save(_settings);
             AppendLog($"[pob-embed] using {pob}");
         }
+        Services.PobBootstrap.EnsureLiveLink(pob, AppendLog);
         try
         {
             _pobHost = new Services.PobEmbedHost(pob, AppendLog);
@@ -284,8 +285,13 @@ public partial class MainWindow
             if (safe.Length > 40) safe = safe.Substring(0, 40);
             var file = Path.Combine(buildsDir, $"MossRaven - {safe}.xml");
             File.WriteAllText(file, xml);
-            AppendLog($"[pob] wrote '{Path.GetFileName(file)}' into PoB2 Builds — open it from PoB2's build list (refresh the list if it's already open)");
             EnsurePobEmbedded();
+            // Live-link: load it into the RUNNING window right now (the
+            // Builds-folder copy stays as the durable save).
+            var exe = _settings.PobInstallPath ?? "";
+            if (exe.Length > 0 && File.Exists(exe))
+                Services.PobBootstrap.PushLive(exe, xml, AppendLog);
+            AppendLog($"[pob] '{Path.GetFileName(file)}' saved to Builds and pushed into the live PoB window");
         }
         catch (Exception ex)
         {

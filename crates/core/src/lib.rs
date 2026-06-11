@@ -742,6 +742,7 @@ impl SearchEngine {
 
         let mut variants_scored = 0;
         let mut cells_placed = 0;
+        let mut live_best: Option<(f64, String)> = None;
         for (id, result) in scored {
             match result {
                 Ok(stats) => {
@@ -777,6 +778,7 @@ impl SearchEngine {
                     let damage_truth = mossraven_surrogate::find_main_skill_gem_name(&proposal.pob_xml)
                         .and_then(|g| self.gem_db.get(&g).and_then(|i| i.damage_type()));
                     let coords = coords_from_stats(&stats, hint, damage_truth);
+                    let stats_dps = stats.total_dps;
                     let cost_est = cost::estimate_cost(&proposal.pob_xml);
                     let entry = ArchiveEntry {
                         variant_id: id.clone(),
@@ -790,10 +792,28 @@ impl SearchEngine {
                     if self.archive.try_place(coords, entry) {
                         cells_placed += 1;
                     }
+                    if live_best.as_ref().map(|(d, _)| stats_dps > *d).unwrap_or(true) {
+                        live_best = Some((stats_dps, proposal.pob_xml.clone()));
+                    }
                 }
                 Err(e) => {
                     tracing::debug!(variant_id = %id, error = %e, "tier-3 rejected variant");
                 }
+            }
+        }
+
+        // LIVE TREE VIEW (SPEC: watch nodes light up as tiers explore):
+        // write this generation's best-scored variant into the PoB
+        // live-link handoff. The injected watcher in the local PoB copy
+        // reloads it within ~0.5s. Best-effort; never blocks the search.
+        if let Some(dir) = std::env::var_os("MOSSRAVEN_LIVE_VIEW_DIR") {
+            if let Some((_, xml)) = &live_best {
+                let dir = std::path::PathBuf::from(dir);
+                let _ = std::fs::write(dir.join("mossraven-live.xml"), xml);
+                let _ = std::fs::write(
+                    dir.join("mossraven-live.sig"),
+                    format!("{gen}-{}", simple_hash(xml)),
+                );
             }
         }
 
