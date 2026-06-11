@@ -80,12 +80,27 @@ public sealed class McpServiceClient : IDisposable
         await Task.CompletedTask;
     }
 
+    private int _missingNodeCount;
+
     private async Task ReadStderrLoop()
     {
         if (_proc?.StandardError is null) return;
         string? line;
         while ((line = await _proc.StandardError.ReadLineAsync()) is not null)
         {
+            // PoB's tree loader prints one line per fixture node that no
+            // longer exists in the current tree (version skew — harmless,
+            // PoB prunes and recalculates). Collapse the burst to one line.
+            if (line.Contains("missing node"))
+            {
+                _missingNodeCount++;
+                continue;
+            }
+            if (_missingNodeCount > 0)
+            {
+                _log($"[service] (+{_missingNodeCount} 'missing node' lines — fixture/tree version skew, harmless; PoB prunes them)");
+                _missingNodeCount = 0;
+            }
             _log($"[service] {line}");
         }
     }

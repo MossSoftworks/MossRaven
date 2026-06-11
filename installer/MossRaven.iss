@@ -30,7 +30,12 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
+SetupIconFile=..\ui\MossRaven\Assets\mossraven.ico
 UninstallDisplayIcon={app}\MossRaven.exe
+; Code signing (when a cert exists): uncomment SignTool and configure in the
+; Inno IDE: Tools -> Configure Sign Tools ->
+;   signtool=$qC:\path\signtool.exe$q sign /fd SHA256 /a /t http://timestamp.digicert.com $f
+;SignTool=signtool
 
 [Files]
 Source: "..\dist\MossRaven.exe";            DestDir: "{app}"; Flags: ignoreversion

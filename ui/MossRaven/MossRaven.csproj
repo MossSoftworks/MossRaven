@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <ApplicationIcon>Assets\mossraven.ico</ApplicationIcon>
     <RootNamespace>MossRaven</RootNamespace>
     <AssemblyName>MossRaven</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>

@@ -19,6 +19,17 @@
 //!   chaos at discovery time). 148 weapon lines live on 2026-06-11.
 //!   `MOSSRAVEN_NINJA_ITEM_URL` still overrides the template if it moves.
 //!
+//! BUILDS API (discovered 2026-06-11, for #74 seed import / meta-distance):
+//! - `GET /poe2/api/data/build-index-state` → per-league ladder totals +
+//!   class distribution (124,230 chars in Runes of Aldur at discovery).
+//! - poe2 `/poe2/api/data/index-state` ALSO carries `snapshotVersions[]`
+//!   with daily build snapshots: `{snapshotName:"runes-of-aldur",
+//!   version:"1901-20260611-56379"}` — the `{version}` for builds routes.
+//! - `GET /poe2/api/builds/{version}/tooltip` → confirmed live (400 wants
+//!   params). `GET /poe2/api/builds/{version}/search` → 404 bare; needs the
+//!   query its `me()` JS helper appends (filter/column params) — next
+//!   session: read the helper chunk or capture one real request.
+//!
 //! Behavior: gated by `MOSSRAVEN_NINJA=1`. On startup, refresh a price map
 //! (unique name → divine value) into `<data-dir>/ninja-prices.json` (24h
 //! TTL) and point `MOSSRAVEN_PRICES_PATH` at it — the cost model overlays

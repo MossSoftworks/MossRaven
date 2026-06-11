@@ -1,0 +1,122 @@
+using System;
+using System.IO;
+using System.IO.Compression;
+using System.Linq;
+using System.Net.Http;
+using System.Text.Json;
+using System.Threading.Tasks;
+
+namespace MossRaven.Services;
+
+/// <summary>
+/// "Package PoB inside the app" — policy-clean version. PoB2's CODE is MIT
+/// but its GGG-derived data/assets fall under the fan-content policy (no
+/// redistribution), so we never bundle it. Instead the app downloads the
+/// OFFICIAL portable release from GitHub on demand (~365 MB, once) into
+/// %LOCALAPPDATA%\MossRaven\PoB2 and points the embed pane at it. Same
+/// user experience as shipping it, none of the redistribution.
+/// </summary>
+public static class PobBootstrap
+{
+    private const string ReleaseApi =
+        "https://api.github.com/repos/PathOfBuildingCommunity/PathOfBuilding-PoE2/releases/latest";
+
+    public static string RuntimeDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "MossRaven", "PoB2");
+
+    /// <summary>Find an already-bootstrapped PoB2 exe, or null.</summary>
+    public static string? FindExistingExe()
+    {
+        if (!Directory.Exists(RuntimeDir)) return null;
+        return Directory
+            .EnumerateFiles(RuntimeDir, "Path of Building*.exe", SearchOption.AllDirectories)
+            .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Ensure the PoB2 runtime exists locally; download + extract the
+    /// official portable release if not. Returns the exe path. Progress
+    /// lines go to <paramref name="log"/> (this is a one-time ~365 MB pull —
+    /// say so loudly).
+    /// </summary>
+    public static async Task<string?> EnsureRuntimeAsync(Action<string> log)
+    {
+        var existing = FindExistingExe();
+        if (existing != null) return existing;
+
+        Directory.CreateDirectory(RuntimeDir);
+        using var http = new HttpClient();
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("MossRaven/0.2 (+github.com/MossSoftworks/MossRaven)");
+        http.Timeout = TimeSpan.FromMinutes(30);
+
+        log("[pob-setup] looking up the latest official PoB2 release…");
+        string? zipUrl = null, tag = null;
+        long size = 0;
+        try
+        {
+            var meta = await http.GetStringAsync(ReleaseApi);
+            using var doc = JsonDocument.Parse(meta);
+            tag = doc.RootElement.TryGetProperty("tag_name", out var t) ? t.GetString() : "?";
+            foreach (var a in doc.RootElement.GetProperty("assets").EnumerateArray())
+            {
+                var name = a.GetProperty("name").GetString() ?? "";
+                if (name.Contains("Portable", StringComparison.OrdinalIgnoreCase) && name.EndsWith(".zip"))
+                {
+                    zipUrl = a.GetProperty("browser_download_url").GetString();
+                    size = a.TryGetProperty("size", out var sz) ? sz.GetInt64() : 0;
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            log($"[pob-setup] release lookup failed: {ex.Message}");
+            return null;
+        }
+        if (zipUrl == null)
+        {
+            log("[pob-setup] no portable zip on the latest release — install PoB2 manually and set its path in Settings");
+            return null;
+        }
+
+        var zipPath = Path.Combine(RuntimeDir, "pob2-portable.zip");
+        log($"[pob-setup] downloading PoB2 {tag} portable ({size / 1048576.0:N0} MB, one time) — this takes a few minutes…");
+        try
+        {
+            using (var resp = await http.GetAsync(zipUrl, HttpCompletionOption.ResponseHeadersRead))
+            {
+                resp.EnsureSuccessStatusCode();
+                await using var src = await resp.Content.ReadAsStreamAsync();
+                await using var dst = File.Create(zipPath);
+                var buf = new byte[1 << 20];
+                long done = 0, lastMark = 0;
+                int n;
+                while ((n = await src.ReadAsync(buf)) > 0)
+                {
+                    await dst.WriteAsync(buf.AsMemory(0, n));
+                    done += n;
+                    if (done - lastMark > 50L * 1048576)
+                    {
+                        lastMark = done;
+                        log($"[pob-setup] …{done / 1048576} MB");
+                    }
+                }
+            }
+            log("[pob-setup] extracting…");
+            ZipFile.ExtractToDirectory(zipPath, RuntimeDir, overwriteFiles: true);
+            File.Delete(zipPath);
+        }
+        catch (Exception ex)
+        {
+            log($"[pob-setup] download/extract failed: {ex.Message}");
+            return null;
+        }
+
+        var exe = FindExistingExe();
+        log(exe != null
+            ? $"[pob-setup] PoB2 ready: {exe}"
+            : "[pob-setup] extracted but no 'Path of Building*.exe' found — set the path manually in Settings");
+        return exe;
+    }
+}

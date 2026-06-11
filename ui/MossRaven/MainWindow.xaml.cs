@@ -52,6 +52,12 @@ public partial class MainWindow : Window
         }
         catch { /* best-effort */ }
 
+        // Open right-sized: tall enough that the Search Concept column
+        // (concept + retool + preference rows) fits without scrolling,
+        // clamped to the monitor's work area.
+        Height = Math.Min(1080, SystemParameters.WorkArea.Height - 40);
+        Width = Math.Min(1560, SystemParameters.WorkArea.Width - 60);
+
         _service = new McpServiceClient(
             LocateServiceExe(),
             AppendLog,

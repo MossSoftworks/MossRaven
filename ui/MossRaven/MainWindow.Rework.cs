@@ -157,15 +157,40 @@ public partial class MainWindow
 
     private void WsEmbedButton_Click(object sender, RoutedEventArgs e) => EnsurePobEmbedded();
 
-    private void EnsurePobEmbedded()
+    private bool _pobBootstrapping;
+
+    private async void EnsurePobEmbedded()
     {
         if (_pobHost is { IsAlive: true }) return;
         var pob = _settings.PobInstallPath ?? "";
         if (pob.Length == 0 || !File.Exists(pob))
         {
-            AppendLog("[pob-embed] set the PoB2 executable path in Settings (gear) first");
-            PobHostHint.Text = "Set the PoB2 executable path in Settings (gear icon), then Launch PoB2 here.";
-            return;
+            // Auto-discover a previous bootstrap, else download the official
+            // portable release once (~365 MB) — "PoB packaged in the app"
+            // without redistributing GGG data.
+            pob = Services.PobBootstrap.FindExistingExe() ?? "";
+            if (pob.Length == 0)
+            {
+                if (_pobBootstrapping) return;
+                _pobBootstrapping = true;
+                PobHostHint.Text = "Downloading the official PoB2 portable release (~365 MB, one time)…\nProgress in Service status below.";
+                try
+                {
+                    pob = await Services.PobBootstrap.EnsureRuntimeAsync(AppendLog) ?? "";
+                }
+                finally
+                {
+                    _pobBootstrapping = false;
+                }
+                if (pob.Length == 0)
+                {
+                    PobHostHint.Text = "PoB2 download failed — see Service status. You can also install PoB2 yourself and set its path in Settings (gear).";
+                    return;
+                }
+            }
+            _settings.PobInstallPath = pob;
+            Services.SettingsService.Save(_settings);
+            AppendLog($"[pob-embed] using {pob}");
         }
         try
         {
@@ -410,14 +435,33 @@ public partial class MainWindow
             var sentinel = Path.Combine(root, "scratch", "STOP-CHURN");
             Directory.CreateDirectory(Path.Combine(root, "scratch"));
             if (File.Exists(sentinel)) File.Delete(sentinel);
-            _churnProc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            var churnLog = Path.Combine(Path.GetTempPath(), "mr-churn-ui.log");
+            var psi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "powershell.exe",
                 Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"",
                 WorkingDirectory = root,
-                UseShellExecute = true,   // visible console so progress is watchable
+                UseShellExecute = false,      // hidden — no console window
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            _churnProc = new System.Diagnostics.Process { StartInfo = psi, EnableRaisingEvents = true };
+            var sink = new StreamWriter(churnLog, append: false) { AutoFlush = true };
+            _churnProc.OutputDataReceived += (_, a) => { if (a.Data != null) sink.WriteLine(a.Data); };
+            _churnProc.ErrorDataReceived += (_, a) => { if (a.Data != null) sink.WriteLine(a.Data); };
+            _churnProc.Exited += (_, _) => Dispatcher.Invoke(() =>
+            {
+                try { sink.Dispose(); } catch { }
+                string tail = "";
+                try { tail = File.ReadLines(churnLog).LastOrDefault() ?? ""; } catch { }
+                AppendLog($"[ops] churn exited (code {_churnProc?.ExitCode}) — {tail}  · full log: {churnLog}");
+                RefreshOpsStatus();
             });
-            AppendLog("[ops] corpus churn started (own console window; Stop writes the sentinel)");
+            _churnProc.Start();
+            _churnProc.BeginOutputReadLine();
+            _churnProc.BeginErrorReadLine();
+            AppendLog($"[ops] corpus churn running in the background (no window) — progress in the Ops box; log: {churnLog}");
             RefreshOpsStatus();
         }
         catch (Exception ex)
