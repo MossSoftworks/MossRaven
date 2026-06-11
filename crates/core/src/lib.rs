@@ -25,7 +25,9 @@ use std::sync::Arc;
 use thiserror::Error;
 use judge::JudgeBackend;
 
+pub mod corpus;
 pub mod cost;
+pub mod features;
 pub mod mutate;
 pub mod viability;
 
@@ -651,6 +653,25 @@ impl SearchEngine {
             .into_iter()
             .map(|p| (p.variant_id.clone(), p))
             .collect();
+
+        // §3.7 data factory: every successful judge eval is a labeled
+        // training row for the Tier-3 value model — INCLUDING over-budget
+        // variants (the label carries points_used/budget; the model should
+        // learn the legality surface too).
+        {
+            let xml_by_id: HashMap<&str, &str> = proposal_by_id
+                .iter()
+                .map(|(k, p)| (k.as_str(), p.pob_xml.as_str()))
+                .collect();
+            corpus::log_evals(
+                scored.iter().filter_map(|(id, r)| {
+                    r.as_ref()
+                        .ok()
+                        .and_then(|stats| xml_by_id.get(id.as_str()).map(|x| (*x, stats)))
+                }),
+                &cfg.data_version,
+            );
+        }
 
         let mut variants_scored = 0;
         let mut cells_placed = 0;

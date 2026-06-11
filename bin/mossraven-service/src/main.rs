@@ -11,6 +11,7 @@
 //!    iteration without the UI. Parses `--concept` and `--generations`, runs
 //!    the cascade evaluator N times, prints the archive snapshot, exits.
 
+mod ninja;
 mod seeds;
 
 use std::sync::Arc;
@@ -107,6 +108,9 @@ fn parse_args() -> Args {
                      GEMINI_API_KEY                 Tier-2 surrogate provider (free tier; AI Studio)\n    \
                      GEMINI_MODEL                   Default: gemini-2.5-flash-lite\n    \
                      (set any subset; they form a failover chain Cerebras→Groq→Gemini)\n    \
+                     MOSSRAVEN_CORPUS=0             Disable the 3.7 eval corpus (on by default)\n    \
+                     MOSSRAVEN_NINJA=1              Enable poe.ninja live unique prices (24h cache)\n    \
+                     MOSSRAVEN_NINJA_ITEM_URL       Override the item-overview route ({{league}}/{{type}} placeholders)\n    \
                      RUST_LOG                       tracing filter (default: info)\n",
                     env!("CARGO_PKG_VERSION")
                 );
@@ -623,6 +627,18 @@ async fn build_context(pob_path: &str) -> Context {
     };
     let tree_db = Arc::new(mossraven_pob::TreeDb::load(std::path::Path::new(pob_path)));
     let unique_db = Arc::new(mossraven_pob::UniqueDb::load(std::path::Path::new(pob_path)));
+    // §3.7 data factory destination — next to archive.json unless overridden.
+    if std::env::var_os("MOSSRAVEN_CORPUS_DIR").is_none() {
+        let corpus_dir = archive_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("corpus");
+        std::env::set_var("MOSSRAVEN_CORPUS_DIR", &corpus_dir);
+    }
+    // poe.ninja live-price grounding (MOSSRAVEN_NINJA=1; SPEC §1.1.2).
+    if let Some(data_dir) = archive_path.parent() {
+        ninja::refresh_prices(data_dir).await;
+    }
     let engine = SearchEngine::new(archive.clone(), surrogate, judge, gem_db, tree_db, unique_db);
 
     // Stamp every archive entry with the live PoB2 version (SPEC §9:
@@ -1291,6 +1307,16 @@ impl ControlSurface for ServiceControlSurface {
         let by_id: std::collections::HashMap<String, _> = scored.into_iter().collect();
 
         let data_version = self.ctx.engine.state.lock().config.data_version.clone();
+        // Rescores are labeled evals too — feed the §3.7 corpus.
+        mossraven_core::corpus::log_evals(
+            snap.iter().enumerate().filter_map(|(i, (_, e))| {
+                by_id
+                    .get(&format!("cell-{i}"))
+                    .and_then(|r| r.as_ref().ok())
+                    .map(|stats| (e.pob_xml.as_str(), stats))
+            }),
+            &data_version,
+        );
         let mut kept = Vec::new();
         let (mut dropped, mut stale) = (0usize, 0usize);
         for (i, (coords, mut entry)) in snap.into_iter().enumerate() {

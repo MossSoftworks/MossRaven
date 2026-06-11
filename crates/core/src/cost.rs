@@ -89,6 +89,11 @@ fn price_item(text: &str) -> f64 {
     match rarity {
         "unique" => {
             let name = item_display_name(text).unwrap_or_default().to_lowercase();
+            // Live overlay (poe.ninja via MOSSRAVEN_PRICES_PATH) beats the
+            // heuristic; heuristic stays as the offline floor.
+            if let Some(div) = live_prices().get(&name) {
+                return *div;
+            }
             if CHASE_UNIQUES.iter().any(|c| name.contains(c)) {
                 100.0
             } else {
@@ -133,6 +138,20 @@ fn price_item(text: &str) -> f64 {
     }
 }
 
+/// Live unique prices (name lowercase → divines), loaded once from the JSON
+/// file `MOSSRAVEN_PRICES_PATH` points at (written by the service's ninja
+/// refresh). Missing/invalid file = empty map = pure heuristic.
+fn live_prices() -> &'static std::collections::HashMap<String, f64> {
+    static PRICES: std::sync::OnceLock<std::collections::HashMap<String, f64>> =
+        std::sync::OnceLock::new();
+    PRICES.get_or_init(|| {
+        std::env::var_os("MOSSRAVEN_PRICES_PATH")
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    })
+}
+
 /// Line 2 of the item text (after "Rarity: X") — the display name.
 fn item_display_name(text: &str) -> Option<String> {
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
@@ -142,6 +161,12 @@ fn item_display_name(text: &str) -> Option<String> {
     } else {
         Some(first.to_string())
     }
+}
+
+/// Crate-internal re-export for feature extraction (§3.7) — same walk, no
+/// duplicate parser.
+pub(crate) fn equipped_items_for_features(xml: &str) -> Vec<(String, String)> {
+    equipped_items(xml)
 }
 
 /// (slot name, raw item text) for every populated slot of the ACTIVE item
