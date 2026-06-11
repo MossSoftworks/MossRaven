@@ -76,17 +76,18 @@ public sealed class PobEmbedHost : HwndHost
                     // fall through to the title search instead of bailing.
                     _log("[pob-embed] launcher exited early — searching by window title");
                 }
-                // Search INCLUDING invisible windows (we launch hidden);
-                // by pid first, then by title (covers child-process spawns).
-                var cand = FindWindowForPid((uint)_proc.Id, includeHidden: true, appSizedOnly: true);
+                // v8 = the round-5 behavior the user confirmed working:
+                // capture the FIRST top-level window of the process, ANY
+                // size — the splash lands inside our pane and the main
+                // window takes over via the dead-handle re-grab below.
+                var cand = FindWindowForPid((uint)_proc.Id, includeHidden: true, appSizedOnly: false);
                 if (cand == IntPtr.Zero && i >= 10)
-                    cand = FindWindowByTitle("Path of Building", includeHidden: true, appSizedOnly: true);
-                // Any small window (splash) stays hidden; never shown at all.
-                var splash = FindWindowForPid((uint)_proc.Id, includeHidden: false, appSizedOnly: false);
-                if (splash != IntPtr.Zero && !IsAppSized(splash))
-                    ShowWindow(splash, SW_HIDE);
+                    cand = FindWindowByTitle("Path of Building", includeHidden: true, appSizedOnly: false);
                 if (cand != IntPtr.Zero)
+                {
                     _child = cand;
+                    _log($"[pob-embed] capturing window (appSized={IsAppSized(cand)})");
+                }
             }
             if (_child == IntPtr.Zero)
             {
@@ -108,10 +109,15 @@ public sealed class PobEmbedHost : HwndHost
                         // Splash/main handoff or PoB recreated its window —
                         // find the new app-sized one and re-capture.
                         _child = IntPtr.Zero;
-                        for (int j = 0; j < 75 && _child == IntPtr.Zero; j++)
+                        for (int j = 0; j < 150 && _child == IntPtr.Zero; j++)
                         {
                             await Task.Delay(200);
+                            // Prefer the app-sized main window; fall back to
+                            // anything PoB-titled after a few seconds so the
+                            // pane never sits empty.
                             var c2 = FindWindowByTitle("Path of Building", includeHidden: true, appSizedOnly: true);
+                            if (c2 == IntPtr.Zero && j >= 15)
+                                c2 = FindWindowByTitle("Path of Building", includeHidden: true, appSizedOnly: false);
                             if (c2 != IntPtr.Zero) _child = c2;
                         }
                         if (_child != IntPtr.Zero)
