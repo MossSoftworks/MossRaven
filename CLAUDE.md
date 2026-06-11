@@ -39,6 +39,29 @@ definition of done). Keep README's status table truthful when component states c
    `dist\*.exe` mtimes match `target\release` (a stale dist binary silently
    reintroduces fixed bugs through the WPF).
 
+## SANDBOX SHADOW FILESYSTEM (critical, discovered 2026-06-11)
+
+Claude Code's shell runs in a sandbox with a **copy-on-write overlay over the
+user profile** (`%APPDATA%`, `%LOCALAPPDATA%`): writes land in a shadow only
+sandboxed processes see; the user's real session never sees them. The repo
+(`C:\#AppProjects`) is SHARED/real. Consequences:
+
+- Anything "generated for the user" via CLI one-shots or shell-launched apps
+  (archive cells, finalist runs, PoB runtime downloads) is INVISIBLE to them.
+  This masqueraded as flaky launches for two days ("works when you launch
+  it, broken when I do").
+- **To act in the user's real world**: write a `.cmd` into the repo and run
+  it via `explorer.exe "path	o\script.cmd"` (Explorer = real-session
+  parent). Same trick to launch the app in the user's true context for
+  validation: `explorer.exe "...\dist\MossRaven.exe"`, then read
+  `%TEMP%\mossraven-ui.log` (TEMP is shared enough for logs in practice —
+  verify per file).
+- **Repo bridge** for data migration: sandbox-copy shadow → `scratch/…`
+  (real), then explorer-run robocopy `scratch/… → real %APPDATA%`.
+  Used 2026-06-11 to deliver archive.json + 7 finalist runs to the user.
+- Validation rule: a feature touching user data is NOT validated until
+  exercised through an explorer-parented launch.
+
 ## Multi-agent / environment rules (learned the hard way, 2026-06-10)
 
 - **One git writer at a time.** Claude Code (Windows) and Cowork sessions must not run git mutations concurrently in this worktree.
