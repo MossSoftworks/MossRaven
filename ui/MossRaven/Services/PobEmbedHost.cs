@@ -11,27 +11,20 @@ namespace MossRaven.Services;
 /// <summary>
 /// Embeds the REAL desktop Path of Building 2 inside a WPF pane by
 /// re-parenting its top-level window (classic Win32 SetParent hosting).
-/// PoB2 renders via SimpleGraphic (its own swap chain), which tolerates
-/// being a child window; we strip the popup frame, glue it to the host's
-/// client rect, and resize it with the pane.
 ///
-/// v10 lessons, all paid for:
-///  - Capture ONLY the real main window, identified by TITLE ("Path of
-///    Building" on this pid), ANY size. Size gates (>=700px) lost a race
-///    twice: PoB restores its saved window size (often pane-sized, ~630px)
-///    right after creation, so an "app-sized" filter can permanently
-///    reject the main window.
-///  - NEVER capture the boot console ("SimpleGraphic Console"). SetParent
-///    across processes fuses input queues; during boot PoB's thread isn't
-///    pumping messages, so capturing the console freezes the whole WPF UI.
-///    The console is hidden async instead (severable: drop the ShowWindowAsync
-///    calls if PoB ever misbehaves) and un-hidden if no main window appears,
-///    so error text is never lost.
-///  - Only ever match VISIBLE windows. PoB owns invisible helpers ("GLFW
-///    message window", IME) that otherwise get embedded as a dead white pane
-///    while the real window escapes (the v6-v8 bug).
-///  - All recurring geometry ops use SWP_ASYNCWINDOWPOS so a stalled PoB
-///    thread can never hang our UI thread.
+/// PoB2 (SimpleGraphic) creates TWO top-level windows: a small ~566x539
+/// boot CONSOLE (text log) and the app-sized ~1096x759 GUI. On a healthy
+/// boot the console hides itself and the GUI is shown. We therefore:
+///   - capture the app-sized (>=700px) GUI window — and ONLY once it's
+///     visible, which means boot is done and its thread is pumping, so the
+///     cross-process SetParent can't deadlock our UI thread (the freeze we
+///     hit when we used to capture the console mid-boot);
+///   - hide the small console so it never flashes on the desktop;
+///   - match by our process id first, falling back to NEW PoB-titled
+///     windows (never one that predates our launch — that's the user's own
+///     PoB session).
+/// Pixel-probe (scripts/pixel-probe.ps1) is the source of truth for what's
+/// actually in the pane; window geometry alone lied for several rounds.
 ///
 /// Known limits of SetParent hosting (documented, not bugs): keyboard
 /// focus follows clicks into the PoB area; modal PoB dialogs open as
@@ -43,11 +36,9 @@ public sealed class PobEmbedHost : HwndHost
     private Process? _proc;
     private IntPtr _child = IntPtr.Zero;
     private readonly Action<string> _log;
-    // Windows WE hid (boot console + strays) — restored if the main window
-    // vanishes so PoB output is never silently lost.
     private readonly HashSet<IntPtr> _hiddenByUs = new();
-    // PoB-titled windows that existed BEFORE our launch (e.g. the user's
-    // own PoB session) — the title fallback must never steal those.
+    // PoB windows alive BEFORE our launch (the user's own session) — never
+    // steal these via the title fallback.
     private readonly HashSet<IntPtr> _preexisting = new();
 
     public PobEmbedHost(string exePath, Action<string> log)
@@ -60,7 +51,6 @@ public sealed class PobEmbedHost : HwndHost
 
     protected override HandleRef BuildWindowCore(HandleRef hwndParent)
     {
-        // A plain static container window; PoB gets re-parented into it.
         var host = CreateWindowEx(
             0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
@@ -87,36 +77,27 @@ public sealed class PobEmbedHost : HwndHost
                 _log("[pob-embed] process start returned null");
                 return;
             }
-            // Wait for the REAL main window (title-matched, any size) and
-            // capture nothing before it exists — by then PoB's boot is done
-            // and its thread is pumping, so SetParent can't deadlock us.
-            for (int i = 0; i < 240 && _child == IntPtr.Zero; i++)
+            // Hunt for the APP-SIZED GUI window. Capture nothing before it
+            // exists: until boot finishes the only window is the console,
+            // and parenting that mid-boot freezes the UI thread.
+            for (int i = 0; i < 300 && _child == IntPtr.Zero; i++)
             {
-                await Task.Delay(i < 40 ? 50 : 200);
-                if (_proc.HasExited && _child == IntPtr.Zero && i == 40)
+                await Task.Delay(i < 40 ? 50 : 150);
+                HideConsoleWindows();          // keep the boot console off-screen
+                var cand = FindAppSizedWindow();
+                if (cand != IntPtr.Zero)
                 {
-                    // Squirrel-style stubs exit after spawning the real app —
-                    // fall through to the title search instead of bailing.
-                    _log("[pob-embed] launcher exited early — searching by window title");
+                    _child = cand;
+                    _hiddenByUs.Remove(cand);
+                    _log($"[pob-embed] capturing {Describe(cand)}");
                 }
-                _child = FindWindowForPid((uint)_proc.Id, "Path of Building", visibleOnly: true);
-                if (_child == IntPtr.Zero)
-                {
-                    HideStrayWindows();
-                    // Fallback: the real window may belong to a CHILD process
-                    // (updater stubs). Match any NEW top-level titled like PoB.
-                    if (_proc.HasExited || i >= 60)
-                        _child = FindNewWindowByTitle("Path of Building");
-                }
-                if (_child != IntPtr.Zero)
-                    _log($"[pob-embed] capturing {Describe(_child)}");
-                else if (i == 40 || i == 160)
-                    _log($"[pob-embed] still waiting for main window; pid windows: {DumpPidWindows()}");
+                else if (i == 60 || i == 200)
+                    _log($"[pob-embed] waiting for app-sized GUI; pid windows: {DumpPidWindows()}");
             }
             if (_child == IntPtr.Zero)
             {
-                _log("[pob-embed] no PoB2 main window appeared (PoB may show an error); pid windows: " + DumpPidWindows());
-                UnhideHiddenStrays(); // never swallow PoB's error output
+                _log("[pob-embed] no app-sized PoB GUI appeared; pid windows: " + DumpPidWindows());
+                UnhideHidden();
                 return;
             }
             Capture(host);
@@ -129,9 +110,6 @@ public sealed class PobEmbedHost : HwndHost
         }
     }
 
-    /// <summary>Keeps the pane owning a live PoB window: re-grabs if PoB
-    /// recreates its main window, keeps the boot console off the desktop,
-    /// and re-asserts child styles SimpleGraphic occasionally resets.</summary>
     private async Task WatchdogAsync(IntPtr host)
     {
         int tick = 0;
@@ -139,43 +117,30 @@ public sealed class PobEmbedHost : HwndHost
         {
             await Task.Delay(300);
             tick++;
+            HideConsoleWindows();
             if (_child != IntPtr.Zero && !IsWindow(_child))
             {
-                _log("[pob-embed] embedded window closed — re-grabbing main window");
+                _log("[pob-embed] embedded GUI window closed — re-grabbing");
                 _child = IntPtr.Zero;
-                for (int j = 0; j < 375 && _child == IntPtr.Zero && IsWindow(host); j++)
+                for (int j = 0; j < 200 && _child == IntPtr.Zero && IsWindow(host); j++)
                 {
-                    await Task.Delay(80);
-                    var c2 = _proc is { HasExited: false }
-                        ? FindWindowForPid((uint)_proc.Id, "Path of Building", visibleOnly: true)
-                        : IntPtr.Zero;
-                    if (c2 == IntPtr.Zero && j >= 25)
-                    {
-                        // One of the strays WE hid may be (or have become)
-                        // the real window — title-gated, so invisible
-                        // helpers (GLFW/IME) can never match.
-                        if (_proc is { HasExited: false })
-                            c2 = FindWindowForPid((uint)_proc.Id, "Path of Building", visibleOnly: false);
-                        if (c2 != IntPtr.Zero) ShowWindowAsync(c2, SW_SHOW);
-                    }
-                    if (c2 == IntPtr.Zero && (_proc is not { HasExited: false } || j >= 25))
-                        c2 = FindNewWindowByTitle("Path of Building");
-                    if (c2 != IntPtr.Zero) _child = c2;
+                    await Task.Delay(100);
+                    HideConsoleWindows();
+                    var c2 = FindAppSizedWindow();
+                    if (c2 != IntPtr.Zero) { _child = c2; _hiddenByUs.Remove(c2); }
                 }
                 if (_child != IntPtr.Zero)
                 {
-                    _hiddenByUs.Remove(_child);
                     try { Capture(host); _log($"[pob-embed] re-captured {Describe(_child)}"); }
                     catch { }
                 }
                 else
                 {
                     _log("[pob-embed] re-grab found nothing; pid windows: " + DumpPidWindows());
-                    UnhideHiddenStrays();
+                    UnhideHidden();
                 }
                 continue;
             }
-            HideStrayWindows();
             if (_child == IntPtr.Zero) continue;
             if (tick % 5 == 0 && GetParent(_child) != host)
             {
@@ -183,47 +148,6 @@ public sealed class PobEmbedHost : HwndHost
                 catch { }
             }
         }
-    }
-
-    /// <summary>Keep every visible top-level PoB window that isn't our
-    /// captured child OFF the desktop (boot console — which PoB later
-    /// RETITLES to "Path of Building (PoE2)" and re-shows — plus any other
-    /// strays). Never captured: parenting the boot console fuses input
-    /// queues while PoB's thread is boot-busy (the freeze). Safety rule: a
-    /// window carrying the main title is only hidden while we HOLD a live
-    /// captured main, so the window we're about to capture can't be hidden.
-    /// PoB's modal dialogs are owned windows (GetParent != 0) — exempt.</summary>
-    private void HideStrayWindows()
-    {
-        if (_proc is not { HasExited: false }) return;
-        uint pid;
-        try { pid = (uint)_proc.Id; } catch { return; }
-        var holdingMain = _child != IntPtr.Zero && IsWindow(_child);
-        EnumWindows((hwnd, _) =>
-        {
-            GetWindowThreadProcessId(hwnd, out var wpid);
-            if (wpid != pid || hwnd == _child) return true;
-            if (!IsWindowVisible(hwnd) || GetParent(hwnd) != IntPtr.Zero) return true;
-            var sb = new System.Text.StringBuilder(256);
-            GetWindowText(hwnd, sb, sb.Capacity);
-            var isMainTitled = sb.ToString().Contains("Path of Building", StringComparison.OrdinalIgnoreCase);
-            if (isMainTitled && !holdingMain) return true; // might be our capture target
-            ShowWindowAsync(hwnd, SW_HIDE);
-            if (_hiddenByUs.Add(hwnd))
-                _log($"[pob-embed] stray PoB window hidden: {Describe(hwnd)}");
-            return true;
-        }, IntPtr.Zero);
-    }
-
-    private void UnhideHiddenStrays()
-    {
-        foreach (var hwnd in _hiddenByUs)
-        {
-            if (IsWindow(hwnd)) ShowWindowAsync(hwnd, SW_SHOW);
-        }
-        if (_hiddenByUs.Count > 0)
-            _log("[pob-embed] hidden PoB windows restored (no main window — check their output)");
-        _hiddenByUs.Clear();
     }
 
     protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
@@ -239,7 +163,7 @@ public sealed class PobEmbedHost : HwndHost
         var scale = src?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
         var w = Math.Max(50, (int)(ActualWidth * scale));
         var h = Math.Max(50, (int)(ActualHeight * scale));
-        // ASYNC so the WPF UI thread never waits on PoB's message pump.
+        // ASYNC so the WPF UI thread never blocks on PoB's message pump.
         SetWindowPos(_child, IntPtr.Zero, 0, 0, w, h,
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
     }
@@ -249,17 +173,15 @@ public sealed class PobEmbedHost : HwndHost
         try
         {
             if (_proc is { HasExited: false })
-            {
                 _proc.Kill(entireProcessTree: true);
-            }
         }
         catch { /* shutdown best-effort */ }
         DestroyWindow(hwnd.Handle);
     }
 
     /// <summary>Strip frame styles, parent into the host, force a frame
-    /// recalc, and size to the pane. Called only when PoB is past boot and
-    /// pumping messages (we capture nothing before its main window exists).</summary>
+    /// recalc, and size to the pane. Only called on the app-sized GUI, which
+    /// by definition is past boot and pumping messages.</summary>
     private void Capture(IntPtr host)
     {
         var style = GetWindowLongPtr(_child, GWL_STYLE).ToInt64();
@@ -272,49 +194,76 @@ public sealed class PobEmbedHost : HwndHost
         SetParent(_child, host);
         SetWindowPos(_child, IntPtr.Zero, 0, 0, 0, 0,
             SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        ShowWindowAsync(_child, SW_SHOWNA);
         Dispatcher.BeginInvoke(ResizeChild);
     }
 
-    /// <summary>Single window matcher. visibleOnly:true for ALL capture
-    /// paths (invisible helpers = the v6-v8 dead-pane bug); false only for
-    /// diagnostics/unhide. titleContains filters by window title.</summary>
-    private static IntPtr FindWindowForPid(uint pid, string? titleContains, bool visibleOnly)
+    private static bool IsAppSized(IntPtr hwnd)
     {
-        IntPtr found = IntPtr.Zero;
-        EnumWindows((hwnd, _) =>
-        {
-            GetWindowThreadProcessId(hwnd, out var wpid);
-            if (wpid != pid) return true;
-            if (visibleOnly && !IsWindowVisible(hwnd)) return true;
-            if (GetParent(hwnd) != IntPtr.Zero) return true;
-            if (titleContains != null)
-            {
-                var sb = new System.Text.StringBuilder(256);
-                GetWindowText(hwnd, sb, sb.Capacity);
-                if (!sb.ToString().Contains(titleContains, StringComparison.OrdinalIgnoreCase)) return true;
-            }
-            found = hwnd;
-            return false; // stop
-        }, IntPtr.Zero);
-        return found;
+        if (!GetWindowRect(hwnd, out var r)) return false;
+        return (r.Right - r.Left) >= 700 && (r.Bottom - r.Top) >= 480;
     }
 
-    /// <summary>Title fallback that skips windows alive before our launch,
-    /// so it can never steal the user's own PoB session.</summary>
-    private IntPtr FindNewWindowByTitle(string needle)
+    /// <summary>The app-sized GUI: visible, top-level, app-sized. Prefer a
+    /// pid match; fall back to a NEW PoB-titled window (never the user's own
+    /// pre-existing session).</summary>
+    private IntPtr FindAppSizedWindow()
     {
         IntPtr found = IntPtr.Zero;
+        uint pid = SafePid();
         EnumWindows((hwnd, _) =>
         {
-            if (_preexisting.Contains(hwnd)) return true;
+            if (hwnd == _child) return true;
             if (!IsWindowVisible(hwnd) || GetParent(hwnd) != IntPtr.Zero) return true;
-            var sb = new System.Text.StringBuilder(256);
-            GetWindowText(hwnd, sb, sb.Capacity);
-            if (!sb.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase)) return true;
+            if (!IsAppSized(hwnd)) return true;
+            GetWindowThreadProcessId(hwnd, out var wpid);
+            bool ours = pid != 0 && wpid == pid;
+            if (!ours)
+            {
+                if (_preexisting.Contains(hwnd)) return true;
+                if (!TitleOf(hwnd).Contains("Path of Building", StringComparison.OrdinalIgnoreCase)) return true;
+            }
             found = hwnd;
             return false;
         }, IntPtr.Zero);
         return found;
+    }
+
+    /// <summary>Hide every visible, NON-app-sized top-level window of our pid
+    /// (the boot console) so it never flashes. Our captured GUI is app-sized,
+    /// so it's never a target here. PoB modal dialogs are owned windows
+    /// (GetParent != 0) and are skipped.</summary>
+    private void HideConsoleWindows()
+    {
+        uint pid = SafePid();
+        if (pid == 0) return;
+        EnumWindows((hwnd, _) =>
+        {
+            if (hwnd == _child) return true;
+            GetWindowThreadProcessId(hwnd, out var wpid);
+            if (wpid != pid) return true;
+            if (!IsWindowVisible(hwnd) || GetParent(hwnd) != IntPtr.Zero) return true;
+            if (IsAppSized(hwnd)) return true; // never hide the GUI
+            ShowWindowAsync(hwnd, SW_HIDE);
+            if (_hiddenByUs.Add(hwnd))
+                _log($"[pob-embed] boot console hidden: {Describe(hwnd)}");
+            return true;
+        }, IntPtr.Zero);
+    }
+
+    private void UnhideHidden()
+    {
+        foreach (var hwnd in _hiddenByUs)
+            if (IsWindow(hwnd)) ShowWindowAsync(hwnd, SW_SHOW);
+        if (_hiddenByUs.Count > 0)
+            _log("[pob-embed] hidden windows restored (no GUI captured — check their output)");
+        _hiddenByUs.Clear();
+    }
+
+    private uint SafePid()
+    {
+        try { return _proc is { HasExited: false } ? (uint)_proc.Id : 0; }
+        catch { return 0; }
     }
 
     private static IEnumerable<IntPtr> TitledTopLevels(string needle)
@@ -323,21 +272,16 @@ public sealed class PobEmbedHost : HwndHost
         EnumWindows((hwnd, _) =>
         {
             if (GetParent(hwnd) != IntPtr.Zero) return true;
-            var sb = new System.Text.StringBuilder(256);
-            GetWindowText(hwnd, sb, sb.Capacity);
-            if (sb.ToString().Contains(needle, StringComparison.OrdinalIgnoreCase)) list.Add(hwnd);
+            if (TitleOf(hwnd).Contains(needle, StringComparison.OrdinalIgnoreCase)) list.Add(hwnd);
             return true;
         }, IntPtr.Zero);
         return list;
     }
 
-    /// <summary>Diagnostics: every top-level window of the PoB pid (any
-    /// visibility) with title/visible/size — readable in the UI log.</summary>
     private string DumpPidWindows()
     {
-        if (_proc == null) return "(no proc)";
-        uint pid;
-        try { pid = (uint)_proc.Id; } catch { return "(pid unavailable)"; }
+        uint pid = SafePid();
+        if (pid == 0) return "(no proc)";
         var list = new List<string>();
         EnumWindows((hwnd, _) =>
         {
@@ -348,12 +292,17 @@ public sealed class PobEmbedHost : HwndHost
         return list.Count == 0 ? "(none)" : string.Join(" | ", list);
     }
 
-    private static string Describe(IntPtr hwnd)
+    private static string TitleOf(IntPtr hwnd)
     {
         var sb = new System.Text.StringBuilder(256);
         GetWindowText(hwnd, sb, sb.Capacity);
+        return sb.ToString();
+    }
+
+    private static string Describe(IntPtr hwnd)
+    {
         GetWindowRect(hwnd, out var r);
-        return $"hwnd=0x{hwnd.ToInt64():X} \"{sb}\" visible={IsWindowVisible(hwnd)} size={r.Right - r.Left}x{r.Bottom - r.Top}";
+        return $"hwnd=0x{hwnd.ToInt64():X} \"{TitleOf(hwnd)}\" visible={IsWindowVisible(hwnd)} size={r.Right - r.Left}x{r.Bottom - r.Top}";
     }
 
     // ----- Win32 -----
@@ -377,6 +326,7 @@ public sealed class PobEmbedHost : HwndHost
     private const uint SWP_ASYNCWINDOWPOS = 0x4000;
     private const int SW_HIDE = 0;
     private const int SW_SHOW = 5;
+    private const int SW_SHOWNA = 8;
 
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lparam);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lparam);

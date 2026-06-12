@@ -243,6 +243,7 @@ public partial class MainWindow
             Services.SettingsService.Save(_settings);
             AppendLog($"[pob-embed] using {pob}");
         }
+        Services.PobBootstrap.StabilizePob(pob, AppendLog);
         Services.PobBootstrap.EnsureLiveLink(pob, AppendLog);
         try
         {

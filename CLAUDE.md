@@ -62,6 +62,19 @@ sandboxed processes see; the user's real session never sees them. The repo
 - Validation rule: a feature touching user data is NOT validated until
   exercised through an explorer-parented launch.
 
+## PIXEL-PROBE LOOP (Claude's eyes — no user in the loop, born 2026-06-12)
+
+UI features (especially the PoB embed) are validated by LOOKING, not by
+logs or window geometry: `scripts/pixel-probe.ps1` PrintWindow-captures
+every MossRaven/PoB top-level window (visible AND hidden) plus a
+full-screen BitBlt into `scratch/shots/*.png`; Claude then Reads the PNGs
+as images. Works from the sandboxed shell (same window station), no
+permission dialogs. Iteration cycle: publish → `explorer.exe dist\MossRaven.exe`
+→ sleep ~14s → run probe → Read PNGs → fix → repeat. History lesson: three
+rounds of geometry probes said "embedded ok" while the pane was a dead
+white square — only pixels are truth. (The screen-capture MCP needs an
+approval dialog the user may miss; the pixel probe needs nothing.)
+
 ## Multi-agent / environment rules (learned the hard way, 2026-06-10)
 
 - **One git writer at a time.** Claude Code (Windows) and Cowork sessions must not run git mutations concurrently in this worktree.
