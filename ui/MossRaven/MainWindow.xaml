@@ -59,12 +59,35 @@
             <Setter Property="FontFamily" Value="Cascadia Mono, Consolas"/>
             <Setter Property="FontSize" Value="12"/>
         </Style>
+        <!-- One rounded chrome for every button (hover/press via opacity so
+             ghost and accent both keep their own colors). -->
+        <ControlTemplate x:Key="RoundBtnTemplate" TargetType="Button">
+            <Border x:Name="bd" CornerRadius="7"
+                    Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    Padding="{TemplateBinding Padding}">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="bd" Property="Opacity" Value="0.85"/>
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter TargetName="bd" Property="Opacity" Value="0.7"/>
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter TargetName="bd" Property="Opacity" Value="0.45"/>
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
         <Style x:Key="GhostBtn" TargetType="Button">
             <Setter Property="Padding" Value="12,5"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource DimmerBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Template" Value="{StaticResource RoundBtnTemplate}"/>
         </Style>
         <Style x:Key="AccentBtn" TargetType="Button">
             <Setter Property="Padding" Value="12,5"/>
@@ -72,6 +95,31 @@
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Template" Value="{StaticResource RoundBtnTemplate}"/>
+        </Style>
+        <!-- Default chrome: any unstyled button + every TextBox gets rounded
+             corners app-wide. -->
+        <Style TargetType="Button">
+            <Setter Property="Padding" Value="12,5"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource DimmerBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Template" Value="{StaticResource RoundBtnTemplate}"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border CornerRadius="6"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="PrefCombo" TargetType="ComboBox">
             <Setter Property="IsEditable" Value="True"/>
@@ -498,9 +546,6 @@
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
                                 <TextBlock x:Name="WsStats" Foreground="{DynamicResource MossBrush}" FontWeight="SemiBold"
                                            FontSize="13" VerticalAlignment="Center" Margin="0,0,10,0" Text=""/>
-                                <Button x:Name="WsEmbedButton" Content="Launch PoB2 here" Style="{StaticResource AccentBtn}"
-                                        ToolTip="Start (or re-attach) desktop PoB2 embedded in this pane"
-                                        Click="WsEmbedButton_Click"/>
                             </StackPanel>
                         </DockPanel>
 
@@ -510,7 +555,7 @@
                                 BorderThickness="1">
                             <Grid>
                                 <TextBlock x:Name="PobHostHint"
-                                           Text="PoB2 is not embedded yet — set its path in Settings, then Launch PoB2 here.&#10;Clicking a build always writes it into PoB2's Builds folder either way."
+                                           Text="PoB2 loads here automatically.&#10;Click a build or a History entry to view it live — nothing is saved until you choose Save."
                                            Foreground="{DynamicResource DimmerBrush}" FontSize="13"
                                            HorizontalAlignment="Center" VerticalAlignment="Center"
                                            TextAlignment="Center" TextWrapping="Wrap" Margin="24"/>
@@ -559,9 +604,6 @@
                                     <Button x:Name="WsCopyCodeButton" Content="Copy code" Style="{StaticResource GhostBtn}"
                                             Margin="0,0,6,0" ToolTip="Copy the PoB2 import code"
                                             Click="WsCopyCodeButton_Click"/>
-                                    <Button x:Name="WsOpenPobButton" Content="Open in PoB2 window" Style="{StaticResource GhostBtn}"
-                                            ToolTip="Write into PoB2's Builds folder and launch it standalone"
-                                            Click="WsOpenPobButton_Click"/>
                                 </StackPanel>
                             </Grid>
                         </Expander>

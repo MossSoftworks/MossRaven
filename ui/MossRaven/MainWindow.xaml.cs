@@ -537,9 +537,14 @@ public partial class MainWindow : Window
         }
         var code = Str("pob_import_code");
         var statsLine = string.Join("    ", statsBits);
+        var pobXml = Str("pob_xml");
 
         row.MouseLeftButtonUp += (_, _) =>
         {
+            // History click behaves like a Builds-list click: straight into
+            // the live embedded PoB (view-only), plus the guide window.
+            if (pobXml.Length > 100)
+                PushBuildToPob(pobXml, title);
             var win = new FinalistDetailWindow(title, oneLiner, tags, statsLine, sections, code)
             {
                 Owner = this,

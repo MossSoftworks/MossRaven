@@ -206,8 +206,6 @@ public partial class MainWindow
     // ----- Embedded PoB2 -----
     private Services.PobEmbedHost? _pobHost;
 
-    private void WsEmbedButton_Click(object sender, RoutedEventArgs e) => EnsurePobEmbedded();
-
     private bool _pobBootstrapping;
 
     private async void EnsurePobEmbedded()
@@ -258,41 +256,20 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>Write the build into PoB2's Builds folder (always) and make
-    /// sure the embedded PoB2 is up so the user can open it immediately.</summary>
+    /// <summary>Load the build into the LIVE embedded PoB window — view only,
+    /// nothing written to PoB's Builds list. Saving is the user's explicit
+    /// choice (Save in PoB, or Save in Build tools).</summary>
     private void PushBuildToPob(string xml, string title)
     {
         try
         {
-            var pob = _settings.PobInstallPath ?? "";
-            string buildsDir;
-            if (pob.Length > 0 && File.Exists(pob))
-            {
-                buildsDir = Path.Combine(Path.GetDirectoryName(pob) ?? ".", "Builds");
-                if (!Directory.Exists(buildsDir))
-                    buildsDir = Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                        "Path of Building", "Builds");
-            }
-            else
-            {
-                buildsDir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                    "Path of Building", "Builds");
-            }
-            Directory.CreateDirectory(buildsDir);
-            var safe = new string(title.Where(c => char.IsLetterOrDigit(c) || c == ' ' || c == '-').ToArray()).Trim();
-            if (safe.Length == 0) safe = "MossRaven build";
-            if (safe.Length > 40) safe = safe.Substring(0, 40);
-            var file = Path.Combine(buildsDir, $"MossRaven - {safe}.xml");
-            File.WriteAllText(file, xml);
             EnsurePobEmbedded();
-            // Live-link: load it into the RUNNING window right now (the
-            // Builds-folder copy stays as the durable save).
             var exe = _settings.PobInstallPath ?? "";
             if (exe.Length > 0 && File.Exists(exe))
+            {
                 Services.PobBootstrap.PushLive(exe, xml, AppendLog);
-            AppendLog($"[pob] '{Path.GetFileName(file)}' saved to Builds and pushed into the live PoB window");
+                AppendLog($"[pob] '{title}' loaded into the live PoB window (not saved — Save keeps it)");
+            }
         }
         catch (Exception ex)
         {

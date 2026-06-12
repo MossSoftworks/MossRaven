@@ -63,6 +63,20 @@ public partial class MainWindow
             }
             else
             {
+                // Real exit: nothing of ours may outlive the app. An orphaned
+                // churn after a force-close once locked the log files and
+                // broke the next session's churn start.
+                try
+                {
+                    File.WriteAllText(Path.Combine(RepoRootDir(), "scratch", "STOP-CHURN"), "app exit");
+                }
+                catch { }
+                try
+                {
+                    if (_churnProc is { HasExited: false })
+                        _churnProc.Kill(entireProcessTree: true);
+                }
+                catch { }
                 _tray!.Visible = false;
                 _tray.Dispose();
             }

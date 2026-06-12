@@ -33,7 +33,9 @@ try {
         if (Test-Path $sentinel) { Write-Output "STOP-CHURN sentinel found - exiting."; break }
         if ($MaxCycles -gt 0 -and $cycle -ge $MaxCycles) { break }
         $cycle++
-        $log = Join-Path $env:TEMP ("mr-churn-{0}.log" -f ($cycle % 10))
+        # PID-namespaced: an orphaned churn (force-closed app) must never
+        # lock the log names a fresh churn session wants.
+        $log = Join-Path $env:TEMP ("mr-churn-{0}-{1}.log" -f $PID, ($cycle % 10))
         Write-Output ("cycle {0}: {1} generations (log {2})" -f $cycle, $Generations, $log)
         & $exe --tool run_search --tool-args-file $argsFile *> $log
         if ($LASTEXITCODE -ne 0) {

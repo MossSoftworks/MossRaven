@@ -37,16 +37,16 @@ public static class PobBootstrap
     // chunk. That silently broke Main.lua loading every launch (revealed by
     // pixel-probe 2026-06-12 once the GetVirtualScreenSize popup stopped
     // masking it). EnsureLiveLink migrates the broken v1/v2 tail away.
-    private const string LiveBegin = "-- MossRaven live-link v3 BEGIN (auto-managed; do not edit within sentinels)";
-    private const string LiveEnd = "-- MossRaven live-link v3 END";
-    private const string LiveLinkLua = @"-- MossRaven live-link v3 BEGIN (auto-managed; do not edit within sentinels)
+    private const string LiveBegin = "-- MossRaven live-link v4 BEGIN (auto-managed; do not edit within sentinels)";
+    private const string LiveEnd = "-- MossRaven live-link v4 END";
+    private const string LiveLinkLua = @"-- MossRaven live-link v4 BEGIN (auto-managed; do not edit within sentinels)
 do
     local mrOrigOnFrame = main.OnFrame
-    local mrTick, mrLastSig = 0, nil
+    local mrTick, mrLastSig, mrTreeIn = 0, nil, 0
     function main:OnFrame(...)
         if mrOrigOnFrame then mrOrigOnFrame(self, ...) end
         mrTick = mrTick + 1
-        if mrTick >= 5 then
+        if mrTick >= 2 then
             mrTick = 0
             local sf = io.open(""mossraven-live.sig"", ""rb"")
             if sf then
@@ -60,14 +60,22 @@ do
                         xf:close()
                         if xml and #xml > 100 then
                             self:SetMode(""BUILD"", false, ""MossRaven Live"", xml)
+                            mrTreeIn = 12 -- land on the TREE tab once the build inits
                         end
                     end
                 end
             end
         end
+        if mrTreeIn > 0 then
+            mrTreeIn = mrTreeIn - 1
+            if mrTreeIn == 0 and self.mode == ""BUILD"" then
+                local b = self.modes and self.modes[""BUILD""]
+                if b and b.viewMode then b.viewMode = ""TREE"" end
+            end
+        end
     end
 end
--- MossRaven live-link v3 END";
+-- MossRaven live-link v4 END";
 
     /// <summary>Inject the live-link watcher into Main.lua, BEFORE its
     /// trailing `return main`. Idempotent and self-healing: strips any prior
@@ -86,20 +94,27 @@ end
             var original = File.ReadAllText(mainLua);
             var text = original;
 
-            // 1. Remove any existing v3 sentinel block (anywhere).
-            int b = text.IndexOf(LiveBegin, StringComparison.Ordinal);
-            int e = text.IndexOf(LiveEnd, StringComparison.Ordinal);
-            if (b >= 0 && e > b)
+            // Remove every prior MossRaven block, any version. Sentinel-style
+            // blocks (v3+) have an END line — remove just the span; legacy
+            // v1/v2 were appended after `return main` (the Lua syntax bug),
+            // so without an END line everything from marker to EOF is dead.
+            for (int guard = 0; guard < 8; guard++)
             {
-                int endPos = e + LiveEnd.Length;
-                text = (text.Substring(0, b).TrimEnd() + "\n") + text.Substring(endPos).TrimStart('\r', '\n');
+                int b = text.IndexOf("-- MossRaven live-link v", StringComparison.Ordinal);
+                if (b < 0) break;
+                int e = text.IndexOf(" END", b, StringComparison.Ordinal);
+                // The END token must belong to a MossRaven sentinel line.
+                int endLine = e >= 0 ? text.LastIndexOf("-- MossRaven live-link v", e, StringComparison.Ordinal) : -1;
+                if (e >= 0 && endLine > b)
+                {
+                    text = (text.Substring(0, b).TrimEnd() + "\n")
+                         + text.Substring(e + " END".Length).TrimStart('\r', '\n');
+                }
+                else
+                {
+                    text = text.Substring(0, b).TrimEnd() + "\n";
+                }
             }
-
-            // 2. Migrate the broken v1/v2 tail: those were appended after
-            // `return main`, so anything from their marker to EOF is dead.
-            int legacy = text.IndexOf("-- MossRaven live-link v", StringComparison.Ordinal);
-            if (legacy >= 0)
-                text = text.Substring(0, legacy).TrimEnd() + "\n";
 
             var alreadyClean = text; // text with no MossRaven block at all
 
@@ -115,12 +130,61 @@ end
 
             File.WriteAllText(mainLua, patched, new System.Text.UTF8Encoding(false));
             log(ret >= 0
-                ? "[pob-live] live-link v3 injected before 'return main' (~80ms poll); migrated any broken v1/v2 tail"
-                : "[pob-live] live-link v3 appended (no trailing return found)");
+                ? "[pob-live] live-link v4 injected before 'return main' (~32ms poll, lands on TREE); prior versions migrated"
+                : "[pob-live] live-link v4 appended (no trailing return found)");
         }
         catch (Exception ex)
         {
             log($"[pob-live] injection failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Edit SimpleGraphic.cfg BEFORE each PoB launch so its windows are BORN
+    /// off-screen (vid_last x,y = -32000) — the embed then captures and moves
+    /// them into the pane, so nothing ever flashes on the desktop. Must run
+    /// every launch: PoB saves its (embedded, client-coord) position back on
+    /// exit. Also sets r_elideFrames 0 — SimpleGraphic's frame-skip flag —
+    /// so the embedded render loop doesn't stutter.
+    /// </summary>
+    public static void PrepareGraphicsConfig(string exePath, Action<string> log)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(exePath) ?? RuntimeDir;
+            var cfg = Path.Combine(dir, "SimpleGraphic", "SimpleGraphic.cfg");
+            string[] lines = File.Exists(cfg) ? File.ReadAllLines(cfg) : Array.Empty<string>();
+            var outLines = new System.Collections.Generic.List<string>();
+            bool sawVidLast = false, sawElide = false;
+            foreach (var line in lines)
+            {
+                if (line.StartsWith("set vid_last ", StringComparison.Ordinal))
+                {
+                    sawVidLast = true;
+                    // format: set vid_last "w,h,x,y,flags" — keep w,h + flags
+                    var q = line.Split('"');
+                    var parts = q.Length >= 2 ? q[1].Split(',') : Array.Empty<string>();
+                    var w = parts.Length > 0 ? parts[0] : "1080";
+                    var h = parts.Length > 1 ? parts[1] : "720";
+                    var fl = parts.Length > 4 ? parts[4] : "0";
+                    outLines.Add($"set vid_last \"{w},{h},-32000,-32000,{fl}\"");
+                }
+                else if (line.StartsWith("set r_elideFrames ", StringComparison.Ordinal))
+                {
+                    sawElide = true;
+                    outLines.Add("set r_elideFrames \"0\"");
+                }
+                else outLines.Add(line);
+            }
+            if (!sawVidLast) outLines.Add("set vid_last \"1080,720,-32000,-32000,0\"");
+            if (!sawElide) outLines.Add("set r_elideFrames \"0\"");
+            Directory.CreateDirectory(Path.GetDirectoryName(cfg)!);
+            File.WriteAllLines(cfg, outLines);
+            log("[pob-cfg] windows set to spawn off-screen; frame-skip off");
+        }
+        catch (Exception ex)
+        {
+            log($"[pob-cfg] prepare failed (cosmetic only): {ex.Message}");
         }
     }
 

@@ -66,6 +66,10 @@ public sealed class PobEmbedHost : HwndHost
         {
             foreach (var w in TitledTopLevels("Path of Building")) _preexisting.Add(w);
 
+            // Windows spawn off-screen (vid_last x,y=-32000) — zero desktop
+            // flashes by construction; we move the GUI into the pane.
+            PobBootstrap.PrepareGraphicsConfig(_exePath, _log);
+
             _proc = Process.Start(new ProcessStartInfo
             {
                 FileName = _exePath,
@@ -80,9 +84,9 @@ public sealed class PobEmbedHost : HwndHost
             // Hunt for the APP-SIZED GUI window. Capture nothing before it
             // exists: until boot finishes the only window is the console,
             // and parenting that mid-boot freezes the UI thread.
-            for (int i = 0; i < 300 && _child == IntPtr.Zero; i++)
+            for (int i = 0; i < 360 && _child == IntPtr.Zero; i++)
             {
-                await Task.Delay(i < 40 ? 50 : 150);
+                await Task.Delay(i < 180 ? 16 : 150);
                 HideConsoleWindows();          // keep the boot console off-screen
                 var cand = FindAppSizedWindow();
                 if (cand != IntPtr.Zero)
