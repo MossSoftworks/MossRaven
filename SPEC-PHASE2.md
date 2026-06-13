@@ -37,6 +37,46 @@ narrowing. Truth never stops; the GNN never stops; the overseer keeps them hones
 
 ---
 
+## 0.5 The Atlas, the Librarian, and the Cartographer (Taylor, 2026-06-13)
+
+A sharpening of what we're actually building, and what the GNN is *for*:
+
+- **The Atlas = the product.** A map of build-space, **PoB-scored**, multi-objective.
+  Not one number per build — a vector: **bossing** power, **mapping** power, defense,
+  and **cost** (where *cost ≈ speed*: how fast you can acquire it). Each entry is "this
+  build, at this cost, does this much bossing / this much mapping." This is MAP-Elites
+  taken to its limit: best-per-niche where niche = (class × skill × gear × content-type ×
+  cost-band).
+- **The query is a Librarian, not an oracle.** Given a player's description + budget,
+  finding the answer is a **search/rank over the Atlas** ("best bossing build under 10
+  div for a Druid"), not a neural prediction. We have a library; we need a librarian.
+- **So why the GNN ("Lightning Ant")? It's the Cartographer, not the oracle.** Two jobs:
+  1. **Afford the Atlas.** The discretized build-space is *still* far too big to PoB-score
+     exhaustively (millions of archetypes × ~1 s each = months of CPU; and the *full*
+     space — rare-mod gear, every tree subset — is effectively infinite, so the Atlas is a
+     quantized map of *meaningful archetypes*, never literally "every atom"). The GNN
+     **predicts which regions are worth PoB-scoring**, fills gaps with predictions, and we
+     **verify samples** with PoB. It's how we build a near-complete Atlas without infinite
+     compute.
+  2. **Keep it fresh.** On a patch, the GNN predicts which builds changed most so we
+     re-score *deltas*, not the whole Atlas.
+- **The scoring problem is the hard part (Taylor).** "Accurately score each variation"
+  means multi-category, cost-relative scores: bossing-with-an-eye-to-cost, mapping-with-
+  an-eye-to-cost. The value function the librarian ranks by is **score-per-cost per
+  content type**, because a cheap build at 80% power beats an expensive one for most
+  players. (Defense/EHP is a gate, not a maximand: enough to survive the content, then
+  maximize offense-per-cost.)
+- **Churn runs over a SCOPE, not a timeframe (Taylor).** A node isn't told "run 400
+  generations"; the **Overseer (§5) hands it a SCOPE** — a region of the Atlas to fill
+  (e.g. "Warrior × slam skills × budget tier"). The node fills that scope, reports
+  coverage, gets the next scope. Generations-per-cycle was a stopgap; scopes are the real
+  unit of work, and they're what the swarm coordinator distributes.
+
+So the end-state isn't "GNN replaces PoB." It's: **PoB grounds the Atlas, the Cartographer
+GNN lets us map it affordably and keep it current, and the Librarian answers players from
+the map.** The GNN earns its place by making a near-complete, always-fresh Atlas
+*possible* — not by being the thing players query.
+
 ## 1. Carry-forward from Phase 1 (do not lose)
 
 The 7-tier pipeline stays the spine:
