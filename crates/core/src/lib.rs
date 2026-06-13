@@ -298,6 +298,28 @@ fn simple_hash(s: &str) -> u64 {
     h
 }
 
+/// Set viewMode="TREE" on the build XML's `<Build>` tag so the embedded PoB
+/// opens on the passive tree (PoB's Build:Load honors this attribute).
+fn force_tree_view(xml: &str) -> String {
+    let Some(b) = xml.find("<Build") else {
+        return xml.to_string();
+    };
+    let Some(rel) = xml[b..].find('>') else {
+        return xml.to_string();
+    };
+    let close = b + rel;
+    let tag = &xml[b..close];
+    let new_tag = if tag.contains("viewMode=\"") {
+        let head = &tag[..tag.find("viewMode=\"").unwrap()];
+        let after = &tag[tag.find("viewMode=\"").unwrap() + "viewMode=\"".len()..];
+        let end = after.find('"').map(|i| i + 1).unwrap_or(0);
+        format!("{head}viewMode=\"TREE\"{}", &after[end..])
+    } else {
+        format!("<Build viewMode=\"TREE\"{}", &tag["<Build".len()..])
+    };
+    format!("{}{}{}", &xml[..b], new_tag, &xml[close..])
+}
+
 #[derive(Debug, Error)]
 pub enum CoreError {
     #[error("tier-4 judge backend error: {0}")]
@@ -809,10 +831,13 @@ impl SearchEngine {
         if let Some(dir) = std::env::var_os("MOSSRAVEN_LIVE_VIEW_DIR") {
             if let Some((_, xml)) = &live_best {
                 let dir = std::path::PathBuf::from(dir);
-                let _ = std::fs::write(dir.join("mossraven-live.xml"), xml);
+                // Stamp viewMode="TREE" so the embedded PoB lands on the
+                // passive tree as the AI explores (same as a build click).
+                let xml = force_tree_view(xml);
+                let _ = std::fs::write(dir.join("mossraven-live.xml"), &xml);
                 let _ = std::fs::write(
                     dir.join("mossraven-live.sig"),
-                    format!("{gen}-{}", simple_hash(xml)),
+                    format!("{gen}-{}", simple_hash(&xml)),
                 );
             }
         }

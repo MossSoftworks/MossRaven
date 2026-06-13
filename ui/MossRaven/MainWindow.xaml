@@ -458,8 +458,8 @@
                                     <TextBlock x:Name="T3CountText" Text="0"
                                                Foreground="{DynamicResource MossBrush}" FontWeight="SemiBold" FontSize="19"
                                                VerticalAlignment="Center" Margin="0,0,10,0"/>
-                                    <Button x:Name="FinalistHistoryButton" Content="History" Style="{StaticResource GhostBtn}" Padding="8,3" FontSize="12.5"
-                                            ToolTip="Browse every saved finalist run"
+                                    <Button x:Name="FinalistHistoryButton" Content="Builds" Style="{StaticResource GhostBtn}" Padding="8,3" FontSize="12.5"
+                                            ToolTip="Browse saved builds — click one to load it live in PoB and open its guide"
                                             VerticalAlignment="Center" Margin="0,0,6,0" Click="FinalistHistoryButton_Click"/>
                                     <Button x:Name="SynthesizeFinalistsButton" Content="Synthesize" Style="{StaticResource AccentBtn}" Padding="8,3" FontSize="12.5"
                                             ToolTip="Tiers 6+7 — pool, curate 5, write guides"

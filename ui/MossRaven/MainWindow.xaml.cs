@@ -191,7 +191,7 @@ public partial class MainWindow : Window
         // Refresh always returns to the live archive view.
         FinalistHistoryScroller.Visibility = Visibility.Collapsed;
         BuildList.Visibility = Visibility.Visible;
-        FinalistHistoryButton.Content = "History";
+        FinalistHistoryButton.Content = "Builds";
         await RefreshArchiveAsync();
     }
 
@@ -212,15 +212,15 @@ public partial class MainWindow : Window
         {
             FinalistHistoryScroller.Visibility = Visibility.Collapsed;
             BuildList.Visibility = Visibility.Visible;
-            FinalistHistoryButton.Content = "History";
+            FinalistHistoryButton.Content = "Builds";
             BuildListHint.Text = "Click a build to copy its PoB import code to clipboard.";
             return;
         }
         LoadFinalistHistoryViaService();
         BuildList.Visibility = Visibility.Collapsed;
         FinalistHistoryScroller.Visibility = Visibility.Visible;
-        FinalistHistoryButton.Content = "Archive";
-        BuildListHint.Text = "Expand a run, click a build for its full guide (PoB code copies from the detail window).";
+        FinalistHistoryButton.Content = "Hide builds";
+        BuildListHint.Text = "Click a build to load it live in PoB (tree view) and open its full guide.";
     }
 
     private bool _historyRetryDone;
@@ -462,6 +462,28 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Clickable summary row for one finalist; click opens the full-guide detail window.</summary>
+    /// <summary>Decode a PoB import code (urlsafe-base64 of zlib(xml)) back to
+    /// build XML — the same format the engine writes. Returns "" on any error.</summary>
+    private static string DecodePobCode(string code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return "";
+        try
+        {
+            var b64 = code.Trim().Replace('-', '+').Replace('_', '/');
+            switch (b64.Length % 4) { case 2: b64 += "=="; break; case 3: b64 += "="; break; }
+            var compressed = Convert.FromBase64String(b64);
+            using var ms = new MemoryStream(compressed);
+            using var zs = new System.IO.Compression.ZLibStream(ms, System.IO.Compression.CompressionMode.Decompress);
+            using var outMs = new MemoryStream();
+            zs.CopyTo(outMs);
+            return System.Text.Encoding.UTF8.GetString(outMs.ToArray());
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
     private Border BuildFinalistRow(JsonElement fin)
     {
         string Str(string key) => fin.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String
@@ -537,7 +559,10 @@ public partial class MainWindow : Window
         }
         var code = Str("pob_import_code");
         var statsLine = string.Join("    ", statsBits);
+        // Saved finalists store the PoB import code (not raw XML); decode it
+        // so a click loads straight into the live embedded PoB.
         var pobXml = Str("pob_xml");
+        if (pobXml.Length < 100) pobXml = DecodePobCode(code);
 
         row.MouseLeftButtonUp += (_, _) =>
         {

@@ -276,7 +276,7 @@ end
         try
         {
             var dir = Path.GetDirectoryName(exePath) ?? RuntimeDir;
-            File.WriteAllText(Path.Combine(dir, "mossraven-live.xml"), xml);
+            File.WriteAllText(Path.Combine(dir, "mossraven-live.xml"), ForceTreeView(xml));
             File.WriteAllText(Path.Combine(dir, "mossraven-live.sig"),
                 (++_liveCounter).ToString());
         }
@@ -284,6 +284,30 @@ end
         {
             log($"[pob-live] push failed: {ex.Message}");
         }
+    }
+
+    /// <summary>Stamp viewMode="TREE" onto the build XML's &lt;Build&gt; tag.
+    /// PoB's Build:Load reads xml.attrib.viewMode (Build.lua) and lands on
+    /// that tab — so a click opens straight on the passive tree instead of
+    /// the Import/Export tab. Bulletproof vs. poking viewMode after the fact.</summary>
+    private static string ForceTreeView(string xml)
+    {
+        int b = xml.IndexOf("<Build", StringComparison.Ordinal);
+        if (b < 0) return xml;
+        int close = xml.IndexOf('>', b);
+        if (close < 0) return xml;
+        var tag = xml.Substring(b, close - b);
+        string newTag;
+        if (tag.Contains("viewMode=\""))
+        {
+            newTag = System.Text.RegularExpressions.Regex.Replace(
+                tag, "viewMode=\"[^\"]*\"", "viewMode=\"TREE\"");
+        }
+        else
+        {
+            newTag = "<Build viewMode=\"TREE\"" + tag.Substring("<Build".Length);
+        }
+        return xml.Substring(0, b) + newTag + xml.Substring(close);
     }
 
     /// <summary>Find an already-bootstrapped PoB2 exe, or null.</summary>

@@ -79,7 +79,93 @@ pub fn apply_ops_to_xml(
         xml = set_skills_container_attr(&xml, "defaultGemLevel", "custom");
         xml = set_skills_container_attr(&xml, "defaultGemQuality", "custom");
     }
-    xml
+    // PoE2 legality: PoB's calc engine does NOT enforce socket rules, so a
+    // mutated build could pile up 7-13 gems / duplicate supports and score
+    // inflated DPS. Trim every group to legal on the way out — applied even
+    // for empty ops so illegal seeds get legalized too.
+    enforce_socket_legality(&xml)
+}
+
+/// PoE2 socket-group legality. Each `<Skill>` group may hold its active skill
+/// gem(s) plus AT MOST 5 support gems, and a given support may appear only
+/// ONCE per group. PoB scores illegal groups at face value (no enforcement),
+/// so over-socketed / duplicate-support builds win cells they shouldn't and
+/// poison the corpus labels. This trims each group to the first 5 DISTINCT
+/// supports (active gems always kept). Supports are identified by `skillId`
+/// beginning with "Support"; the dedupe key is `nameSpec` minus its trailing
+/// tier numeral, so "Fire Penetration I" and "Fire Penetration II" collapse.
+pub fn enforce_socket_legality(xml: &str) -> String {
+    const MAX_SUPPORTS: usize = 5;
+    let mut out = String::with_capacity(xml.len());
+    let mut cursor = 0;
+    while let Some(rel) = xml[cursor..].find("<Skill ") {
+        let gstart = cursor + rel;
+        out.push_str(&xml[cursor..gstart]);
+        let Some(end_rel) = xml[gstart..].find("</Skill>") else {
+            break;
+        };
+        let gend = gstart + end_rel + "</Skill>".len();
+        out.push_str(&sanitize_socket_group(&xml[gstart..gend], MAX_SUPPORTS));
+        cursor = gend;
+    }
+    out.push_str(&xml[cursor..]);
+    out
+}
+
+/// Normalized identity of a support gem (tier-insensitive), for dedupe.
+fn support_base_key(gem_tag: &str) -> String {
+    let name = attr_value_local(gem_tag, "nameSpec").unwrap_or("").trim();
+    let base = match name.rsplit_once(' ') {
+        Some((b, last)) if !last.is_empty() && last.chars().all(|c| matches!(c, 'I' | 'V' | 'X')) => b,
+        _ => name,
+    };
+    base.to_ascii_lowercase()
+}
+
+fn sanitize_socket_group(group: &str, max_supports: usize) -> String {
+    let mut out = String::with_capacity(group.len());
+    let mut cursor = 0;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut support_count = 0usize;
+    let mut dropped = 0usize;
+    while let Some(rel) = group[cursor..].find("<Gem") {
+        let g0 = cursor + rel;
+        let Some(close_rel) = group[g0..].find("/>") else {
+            break;
+        };
+        let g1 = g0 + close_rel + 2;
+        let tag = &group[g0..g1];
+        let is_support = attr_value_local(tag, "skillId")
+            .map(|s| s.starts_with("Support"))
+            .unwrap_or(false);
+        let keep = if !is_support {
+            true
+        } else {
+            let key = support_base_key(tag);
+            if support_count >= max_supports || seen.contains(&key) {
+                false
+            } else {
+                seen.insert(key);
+                support_count += 1;
+                true
+            }
+        };
+        if keep {
+            out.push_str(&group[cursor..g1]); // leading whitespace + the gem tag
+        } else {
+            dropped += 1; // skip the gem AND its leading whitespace
+        }
+        cursor = g1;
+    }
+    out.push_str(&group[cursor..]);
+    if dropped > 0 {
+        tracing::warn!(
+            dropped,
+            kept_supports = support_count,
+            "enforce_socket_legality: trimmed illegal supports (>5 or duplicate)"
+        );
+    }
+    out
 }
 
 /// Allocate a passive notable by name: BFS-path from the build's current
@@ -793,6 +879,32 @@ return {
         let tornado_pos = out.find(r#"nameSpec="Tornado""#).unwrap();
         let added_pos = out.find(r#"nameSpec="Magnified Effect""#).unwrap();
         assert!(added_pos > tornado_pos, "added into scored group: {out}");
+    }
+
+    #[test]
+    fn enforce_socket_legality_caps_and_dedupes() {
+        // Active + 7 supports incl. one exact dup and one tier-dup → legal = 5.
+        let illegal = r#"<Skill mainActiveSkill="1">
+<Gem skillId="FrostBombPlayer" nameSpec="Frost Bomb" level="20"/>
+<Gem skillId="SupportFirePenetrationPlayer" nameSpec="Fire Penetration I" level="1"/>
+<Gem skillId="SupportFirePenetrationPlayer" nameSpec="Fire Penetration I" level="1"/>
+<Gem skillId="SupportFirePenetrationPlayerTwo" nameSpec="Fire Penetration II" level="1"/>
+<Gem skillId="SupportColdPenetrationPlayer" nameSpec="Cold Penetration" level="1"/>
+<Gem skillId="SupportElementalFocusPlayer" nameSpec="Elemental Focus" level="1"/>
+<Gem skillId="SupportBrittlePlayer" nameSpec="Brittle Armour" level="1"/>
+<Gem skillId="SupportCullingStrikePlayer" nameSpec="Culling Strike" level="1"/>
+<Gem skillId="SupportPhysicalMasteryPlayer" nameSpec="Physical Mastery" level="1"/>
+</Skill>"#;
+        let out = enforce_socket_legality(illegal);
+        let supports = out.matches(r#"skillId="Support"#).count();
+        assert_eq!(supports, 5, "must cap at 5 supports, got {supports}:\n{out}");
+        // The active skill survives.
+        assert!(out.contains(r#"nameSpec="Frost Bomb""#), "active kept: {out}");
+        // Duplicate Fire Penetration collapses to one (I kept, dup + II dropped).
+        assert_eq!(out.matches(r#"nameSpec="Fire Penetration"#).count(), 1, "dedup: {out}");
+        // A legal 5-support build is untouched.
+        let legal = enforce_socket_legality(&out);
+        assert_eq!(out, legal, "idempotent on legal builds");
     }
 
     const ITEM_SETS_SNIPPET: &str = r#"<Items activeItemSet="2" useSecondWeaponSet="nil">

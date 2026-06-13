@@ -75,6 +75,11 @@ public sealed class PobEmbedHost : HwndHost
                 FileName = _exePath,
                 WorkingDirectory = System.IO.Path.GetDirectoryName(_exePath) ?? ".",
                 UseShellExecute = true,
+                // Born hidden (round-7 no-flash mechanism): the OS show-hint
+                // is SW_HIDE, so PoB's windows never paint on the desktop;
+                // first visibility is inside the pane after Capture. Combined
+                // with the off-screen vid_last config = belt and suspenders.
+                WindowStyle = ProcessWindowStyle.Hidden,
             });
             if (_proc == null)
             {
@@ -107,6 +112,7 @@ public sealed class PobEmbedHost : HwndHost
             Capture(host);
             _log("[pob-embed] PoB2 embedded");
             _ = Task.Run(() => WatchdogAsync(host));
+            _ = Task.Run(RenderPumpAsync);
         }
         catch (Exception ex)
         {
@@ -151,6 +157,28 @@ public sealed class PobEmbedHost : HwndHost
                 try { Capture(host); _log("[pob-embed] re-captured PoB2 window"); }
                 catch { }
             }
+        }
+    }
+
+    /// <summary>
+    /// SimpleGraphic throttles its frame rate hard when its window is not the
+    /// foreground/focused window — embedded as a child it never is, so the
+    /// pane looks frozen (renders only when you click it, which grants
+    /// transient focus). Posting WM_ACTIVATE(WA_ACTIVE) keeps PoB's internal
+    /// "active" flag set so it renders at full rate, WITHOUT stealing keyboard
+    /// focus from MossRaven. Runs only while embedded; near-zero cost.
+    /// </summary>
+    private async Task RenderPumpAsync()
+    {
+        while (_proc is { HasExited: false })
+        {
+            var c = _child;
+            if (c != IntPtr.Zero && IsWindow(c))
+            {
+                PostMessage(c, WM_ACTIVATE, (IntPtr)WA_ACTIVE, IntPtr.Zero);
+                PostMessage(c, WM_NCACTIVATE, (IntPtr)1, IntPtr.Zero);
+            }
+            await Task.Delay(150);
         }
     }
 
@@ -331,6 +359,9 @@ public sealed class PobEmbedHost : HwndHost
     private const int SW_HIDE = 0;
     private const int SW_SHOW = 5;
     private const int SW_SHOWNA = 8;
+    private const uint WM_ACTIVATE = 0x0006;
+    private const uint WM_NCACTIVATE = 0x0086;
+    private const int WA_ACTIVE = 1;
 
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lparam);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lparam);
@@ -341,6 +372,7 @@ public sealed class PobEmbedHost : HwndHost
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
     [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr hwnd, int cmd);
+    [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }
 

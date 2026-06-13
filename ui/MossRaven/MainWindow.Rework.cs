@@ -74,19 +74,30 @@ public partial class MainWindow
     private void TickSchedule()
     {
         var now = DateTime.Now.ToString("HH:mm");
-        if (now == _lastSchedMinute) return; // fire each matching minute once
-        _lastSchedMinute = now;
         bool churnAlive = _churnProc is { HasExited: false };
-        if (now == _settings.ChurnStartAt && !churnAlive)
+
+        // Churn is a WINDOW, re-checked every tick — not a one-shot at the
+        // exact start minute. Auto-start whenever we're inside the window and
+        // it isn't running (covers app-launch mid-window, a crashed churn, or
+        // recovery after a force-close), and auto-stop when the window ends.
+        // Empty start/stop times = manual only.
+        if (HasChurnWindow())
         {
-            AppendLog($"[ops] scheduled churn start ({now})");
-            OpsChurnButton_Click(this, new RoutedEventArgs());
+            bool inWindow = InChurnWindow(now);
+            if (inWindow && !churnAlive)
+            {
+                AppendLog($"[ops] churn auto-start (inside window {_settings.ChurnStartAt}–{_settings.ChurnStopAt})");
+                OpsChurnButton_Click(this, new RoutedEventArgs());
+            }
+            else if (!inWindow && churnAlive)
+            {
+                AppendLog($"[ops] churn auto-stop (outside window {_settings.ChurnStartAt}–{_settings.ChurnStopAt})");
+                OpsChurnButton_Click(this, new RoutedEventArgs());
+            }
         }
-        if (now == _settings.ChurnStopAt && churnAlive)
-        {
-            AppendLog($"[ops] scheduled churn stop ({now})");
-            OpsChurnButton_Click(this, new RoutedEventArgs());
-        }
+
+        if (now == _lastSchedMinute) return; // one-shot events: once per minute
+        _lastSchedMinute = now;
         if (now == _settings.RescoreAt)
         {
             AppendLog($"[ops] scheduled rescore ({now})");
@@ -97,6 +108,31 @@ public partial class MainWindow
             AppendLog($"[ops] scheduled training ({now})");
             OpsTrainButton_Click(this, new RoutedEventArgs());
         }
+    }
+
+    private bool HasChurnWindow() =>
+        TryHm(_settings.ChurnStartAt, out _) && TryHm(_settings.ChurnStopAt, out _);
+
+    /// <summary>Is `nowHm` inside [start, stop)? Handles overnight windows
+    /// (stop &lt; start, e.g. 22:00→06:00). Zero-length window = never.</summary>
+    private bool InChurnWindow(string nowHm)
+    {
+        if (!TryHm(_settings.ChurnStartAt, out var start)) return false;
+        if (!TryHm(_settings.ChurnStopAt, out var stop)) return false;
+        if (!TryHm(nowHm, out var n) || start == stop) return false;
+        return start < stop ? (n >= start && n < stop) : (n >= start || n < stop);
+    }
+
+    private static bool TryHm(string s, out int minutes)
+    {
+        minutes = 0;
+        if (string.IsNullOrWhiteSpace(s)) return false;
+        var parts = s.Trim().Split(':');
+        if (parts.Length != 2
+            || !int.TryParse(parts[0], out var h) || !int.TryParse(parts[1], out var m)
+            || h < 0 || h > 23 || m < 0 || m > 59) return false;
+        minutes = h * 60 + m;
+        return true;
     }
 
     // ----- Settings gear (titlebar) -----

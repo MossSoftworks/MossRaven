@@ -1459,10 +1459,18 @@ impl ControlSurface for ServiceControlSurface {
         if snap.is_empty() {
             return Ok(json!({ "rescored": 0, "dropped": 0, "kept_stale": 0 }));
         }
+        // Sanitize every elite to PoE2 legality BEFORE rescoring — existing
+        // archives accumulated illegal 7-13-gem groups that scored inflated
+        // DPS. The legal re-score will drop most of them out of their cells.
         let batch: Vec<(String, String)> = snap
             .iter()
             .enumerate()
-            .map(|(i, (_, e))| (format!("cell-{i}"), e.pob_xml.clone()))
+            .map(|(i, (_, e))| {
+                (
+                    format!("cell-{i}"),
+                    mossraven_core::mutate::enforce_socket_legality(&e.pob_xml),
+                )
+            })
             .collect();
         let scored = self
             .ctx
@@ -1502,6 +1510,8 @@ impl ControlSurface for ServiceControlSurface {
                     }
                     entry.stats = stats.clone();
                     entry.data_version = data_version.clone();
+                    // Persist the legal build (what was actually scored).
+                    entry.pob_xml = mossraven_core::mutate::enforce_socket_legality(&entry.pob_xml);
                     let cost_est = mossraven_core::cost::estimate_cost(&entry.pob_xml);
                     entry.estimated_cost_div = cost_est.total_div;
                     entry.cost_band = cost_est.band.to_string();
