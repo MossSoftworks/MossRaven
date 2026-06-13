@@ -9,7 +9,13 @@
 # unicode punctuation corrupts string parsing (caused instant exit-1 crashes).
 
 param(
-    [int]$Generations = 25,
+    # Big cycles by default: each cycle is a fresh service that loads one PoB
+    # Lua VM PER WORKER (~11 on a 12-core box) sequentially — tens of seconds of
+    # mostly-single-threaded startup. Tiny 25-gen cycles meant that startup
+    # DOMINATED the wall clock (the "only 20% CPU" symptom). 400 gens per cycle
+    # amortizes the load over far more scoring so the pool stays saturated.
+    # Corpus rows are append-logged per eval, so a long cycle never risks data.
+    [int]$Generations = 400,
     [int]$MaxCycles = 0
 )
 
@@ -65,12 +71,23 @@ try {
         # lock the log names a fresh churn session wants.
         $log = Join-Path $env:TEMP ("mr-churn-{0}-{1}.log" -f $PID, ($cycle % 10))
         Write-Output ("cycle {0}: {1} generations (log {2})" -f $cycle, $Generations, $log)
-        & $exe --tool run_search --tool-args-file $argsFile *> $log
-        if ($LASTEXITCODE -ne 0) {
-            Write-Output "cycle $cycle exited $LASTEXITCODE - backing off 60s (see $log)"
-            Start-Sleep -Seconds 60
+        # Launch run_search as a child we can KILL instantly when STOP-CHURN
+        # appears — don't wait for the whole 400-gen cycle to finish.
+        $proc = Start-Process -FilePath $exe -ArgumentList @("--tool","run_search","--tool-args-file","`"$argsFile`"") -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+        while (-not $proc.HasExited) {
+            if (Test-Path $sentinel) {
+                Write-Output "STOP-CHURN seen mid-cycle - killing run_search now."
+                try { $proc.Kill($true) } catch { try { Stop-Process -Id $proc.Id -Force } catch {} }
+                break
+            }
+            Start-Sleep -Milliseconds 500
         }
-        Start-Sleep -Seconds 5
+        if (Test-Path $sentinel) { Write-Output "STOP-CHURN sentinel found - exiting."; break }
+        if ($proc.ExitCode -ne 0) {
+            Write-Output "cycle $cycle exited $($proc.ExitCode) - backing off 30s (see $log)"
+            for ($w = 0; $w -lt 30; $w++) { if (Test-Path $sentinel) { break }; Start-Sleep -Seconds 1 }
+        }
+        Start-Sleep -Seconds 1
     }
     $corpus = Join-Path $env:APPDATA "Moss\MossRaven\data\corpus"
     if (Test-Path $corpus) {

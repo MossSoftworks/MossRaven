@@ -19,11 +19,21 @@ corpus, retrains the shared GNN, and redistributes it — **group discovery as a
 
 ```
 BOOTSTRAP (today):  proposer → PoB scores (CPU, slow, TRUTH) → corpus → train GNN
-THE FLIP (goal):    GNN explores millions on GPU (fast) → PoB verifies top-K (sparse)
+GNN-GUIDED (added): GNN explores millions on GPU (fast) → PoB verifies top-K (sparse)
                     → new labels → retrain GNN → smarter exploration → repeat
 SWARM (scale):      every client labels + explores; coordinator aggregates + retrains
                     + redistributes the model + assigns unexplored regions + polices trust
 ```
+
+**These run CONCURRENTLY, always — not bootstrap-THEN-flip (Taylor, 2026-06-13).**
+A GNN that only ever sees what the early CPU churn happened to explore would *ingrain
+that bias* — and once it guides exploration, it reinforces the regions it's already
+confident in, compounding the skew. So the slow PoB-truth generator and the fast GNN
+explorer run **at the same time, for the life of the project**, with an **Overseer
+(§5)** holding the wheel: it forces the truth-generator into the regions the GNN is
+*weak or untested* on — every class, every skill, every gear archetype, at the **current
+patch** — so the corpus stays representative and the GNN keeps generalizing instead of
+narrowing. Truth never stops; the GNN never stops; the overseer keeps them honest.
 
 ---
 
@@ -151,15 +161,39 @@ the existing Supabase identity + Server-C telemetry).
 
 ---
 
-## 5. Novelty supervisor — keep exploration relevant *and* novel
+## 5. The Overseer — coverage, anti-bias, current-patch completeness
 
-- Track archive **cell coverage** + feature-space **density**.
-- Bias seed re-injection / mutation toward **under-explored** cells and novel
-  skill/keystone/unique combinations.
-- Periodically hand cold regions to the **T1 dreamer** (Claude) for fresh concepts.
-- **Global novelty via the swarm:** the coordinator's work-assignments steer clients away
-  from already-covered regions — the colony doesn't re-walk known paths.
-- Surfaces coverage stats in the UI (how much of build-space is mapped).
+**This is the missing piece Taylor flagged: the thing that guarantees we explore ALL
+builds, for ALL classes, with ALL gear, at the CURRENT update — so neither the corpus
+nor the GNN narrows into a biased rut.** It is the novelty supervisor promoted to a
+first-class, always-on controller that steers BOTH the truth-generator (PoB churn) and
+the GNN explorer.
+
+Mandates:
+- **Full-space coverage as an explicit objective**, not a side effect:
+  - **every class + ascendancy**, **every active skill**, **every gear archetype**
+    (uniques, base types, weapon classes, defense layers), at the **live patch's** tree
+    and data versions. Maintain a coverage grid over (class × skill-family × defense ×
+    cost-band × …) and measure fill + density, not just "did we find something good."
+- **Anti-bias steering:** direct the PoB churn into the cells where the **GNN is weak or
+  untested** (high predicted-vs-actual error, or never-labeled) — *active learning at the
+  exploration level*. The truth-generator's job is to keep correcting the GNN's blind
+  spots, not to pile more data where it's already accurate.
+- **Concurrency contract:** truth-generation and GNN-guided exploration run at the same
+  time, indefinitely; the overseer balances their effort (how much PoB compute goes to
+  GNN-proposed promising builds vs. to coverage of cold/uncertain regions).
+- **Patch-freshness:** on a PoB/game update, flag stale regions (old tree/data version),
+  prioritize re-coverage, and never let the GNN train on mixed-version truth without a
+  version tag.
+- **Diversity mechanics:** bias seed re-injection / mutation toward under-explored cells
+  and novel skill/keystone/unique combos; hand genuinely cold regions to the **T1 dreamer
+  (Claude)** for fresh concepts.
+- **Global scope via the swarm:** the coordinator's work-assignments are the overseer at
+  fleet scale — clients are steered away from globally-covered regions and toward the
+  collective blind spots; no two users grind the same cells, and the *union* of all
+  clients' coverage is what the overseer optimizes.
+- **Visibility:** surface the coverage map in the UI (what % of class×skill×gear space is
+  mapped at the current patch, where the GNN is still uncertain).
 
 ---
 

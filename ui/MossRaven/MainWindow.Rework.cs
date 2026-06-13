@@ -19,6 +19,7 @@ public partial class MainWindow
     // ----- shared rework state -----
     private string _wsCode = "";
     private System.Diagnostics.Process? _churnProc;
+    private bool _churnManuallyStopped; // suppress auto-restart after a manual stop
     private DispatcherTimer? _opsTimer;
     private readonly List<ComboBox> _prefUniques = new();
     private readonly List<ComboBox> _prefSkills = new();
@@ -84,7 +85,10 @@ public partial class MainWindow
         if (HasChurnWindow())
         {
             bool inWindow = InChurnWindow(now);
-            if (inWindow && !churnAlive)
+            // Leaving the window clears a manual pause — re-entering the next
+            // window resumes auto-start as normal.
+            if (!inWindow) _churnManuallyStopped = false;
+            if (inWindow && !churnAlive && !_churnManuallyStopped)
             {
                 AppendLog($"[ops] churn auto-start (inside window {_settings.ChurnStartAt}–{_settings.ChurnStopAt})");
                 OpsChurnButton_Click(this, new RoutedEventArgs());
@@ -498,17 +502,26 @@ public partial class MainWindow
         var script = Path.Combine(root, "scripts", "corpus-churn.ps1");
         if (_churnProc is { HasExited: false })
         {
+            // INSTANT stop: kill the churn process tree (the powershell + its
+            // run_search service child) right now, plus drop the sentinel so any
+            // stray cycle also bails. Manual stop sets a flag so the auto-window
+            // check won't immediately restart it (the "can't stop it" loop).
+            _churnManuallyStopped = true;
             try
             {
                 File.WriteAllText(Path.Combine(root, "scratch", "STOP-CHURN"), "stop");
-                AppendLog("[ops] churn stop requested (sentinel written — stops after the current cycle)");
+                if (_churnProc is { HasExited: false }) _churnProc.Kill(entireProcessTree: true);
+                File.Delete(Path.Combine(root, "scratch", "CHURN-RUNNING"));
+                AppendLog("[ops] churn STOPPED (killed now). Auto-restart paused until you start it or the window resets.");
             }
             catch (Exception ex)
             {
-                AppendLog($"[ops] churn stop failed: {ex.Message}");
+                AppendLog($"[ops] churn stop: {ex.Message}");
             }
+            RefreshOpsStatus();
             return;
         }
+        _churnManuallyStopped = false; // an explicit start clears the manual pause
         if (!File.Exists(script))
         {
             AppendLog($"[ops] churn script not found at {script}");
