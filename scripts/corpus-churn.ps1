@@ -34,7 +34,27 @@ try {
     $cores = [Environment]::ProcessorCount
     $pool = [Math]::Max(2, $cores - 1)
     $env:MOSSRAVEN_POOL_SIZE = "$pool"
-    Write-Output ("multi-threaded churn: {0} scoring workers ({1} cores detected)" -f $pool, $cores)
+
+    # MECHANICAL proposals (no cloud LLM): the corpus is a DATA factory, not a
+    # search — it wants volume, not intelligent proposals. The free cloud tiers
+    # (Cerebras 429) made churn idle in 5-minute backoffs (RAM, no CPU). Pure
+    # mechanical mutation keeps every core scoring. To instead drive churn off a
+    # LOCAL GPU model, clear this and set OLLAMA_MODEL=qwen2.5:14b.
+    if (-not $env:OLLAMA_MODEL) { $env:MOSSRAVEN_MECHANICAL = "1" }
+    Write-Output ("multi-threaded churn: {0} scoring workers ({1} cores), mechanical={2}, ollama={3}" -f $pool, $cores, $env:MOSSRAVEN_MECHANICAL, $env:OLLAMA_MODEL)
+
+    # Single-instance lock: a force-closed app used to leave orphan churns that
+    # piled up (4 at once), all hammering the same rate-limited key. If a live
+    # churn already holds the lock, exit instead of stacking.
+    $lock = Join-Path $root "scratch\CHURN-RUNNING"
+    if (Test-Path $lock) {
+        $heldBy = (Get-Content $lock -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($heldBy -and (Get-Process -Id $heldBy -ErrorAction SilentlyContinue)) {
+            Write-Output "another churn (PID $heldBy) is already running - exiting to avoid pile-up."
+            exit 0
+        }
+    }
+    Set-Content $lock -Value $PID -Encoding ascii
 
     $cycle = 0
     while ($true) {
@@ -58,8 +78,10 @@ try {
             Write-Output ("corpus: {0}  {1} KB" -f $_.Name, [Math]::Round($_.Length / 1KB))
         }
     }
+    Remove-Item $lock -ErrorAction SilentlyContinue
 }
 catch {
     Write-Output "CHURN CRASH: $($_.Exception.Message)"
+    if ($lock) { Remove-Item $lock -ErrorAction SilentlyContinue }
     exit 1
 }

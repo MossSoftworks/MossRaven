@@ -480,8 +480,30 @@ async fn build_context(pob_path: &str) -> Context {
     let gem_db = Arc::new(mossraven_pob::GemDb::load(std::path::Path::new(pob_path)));
     let live_vocab = (!gem_db.is_empty()).then(|| gem_db.prompt_block(400, 300));
 
+    // Mechanical (no-LLM) mode for corpus churn: skip the cloud surrogate
+    // entirely and propose mutations deterministically (MockSurrogate). No
+    // network = no rate limits = scoring is CPU-bound and the corpus grows at
+    // the pool's full throughput. The cloud free tiers (Cerebras 429s after a
+    // handful of calls) made churn spend 5-minute backoffs idle, which is why
+    // it showed RAM but no CPU. Interactive search still uses the LLM chain.
+    let mechanical = std::env::var("MOSSRAVEN_MECHANICAL").ok().as_deref() == Some("1");
+
     let mut providers: Vec<(String, Arc<dyn SurrogateProvider>)> = Vec::new();
     let env_nonempty = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    // Local Ollama FIRST when configured (OLLAMA_MODEL): runs on the user's GPU
+    // (CUDA), no rate limits, intelligent proposals. Set OLLAMA_MODEL=qwen2.5:14b
+    // (and optionally OLLAMA_BASE_URL) to drive churn/search off local compute.
+    if !mechanical {
+        if let Some(model) = env_nonempty("OLLAMA_MODEL") {
+            let mut cfg = OpenAiCompatConfig::local_ollama_default();
+            cfg.model = model;
+            if let Some(url) = env_nonempty("OLLAMA_BASE_URL") { cfg.base_url = url; }
+            tracing::info!(model = %cfg.model, base = %cfg.base_url, "surrogate provider: local ollama (GPU, no rate limit)");
+            let mut sur = OpenAiCompatSurrogate::new(cfg);
+            if let Some(v) = &live_vocab { sur = sur.with_vocab_block(v.clone()); }
+            providers.push(("ollama".into(), Arc::new(sur)));
+        }
+    }
     if let Some(key) = env_nonempty("CEREBRAS_API_KEY") {
         let mut cfg = OpenAiCompatConfig::cerebras_default(key);
         if let Some(url) = env_nonempty("CEREBRAS_BASE_URL") {
@@ -522,7 +544,12 @@ async fn build_context(pob_path: &str) -> Context {
         }
     }
     let (surrogate, surrogate_active): (Arc<dyn SurrogateProvider>, bool) =
-        if providers.is_empty() {
+        if mechanical {
+            tracing::info!(
+                "MOSSRAVEN_MECHANICAL=1 — mechanical no-LLM proposals (CPU-bound churn, no rate limits)"
+            );
+            (Arc::new(mossraven_surrogate::MockSurrogate), false)
+        } else if providers.is_empty() {
             tracing::info!(
                 "no surrogate keys set (CEREBRAS_API_KEY / GROQ_API_KEY / GEMINI_API_KEY); \
                  using MockSurrogate (deterministic stub)"
