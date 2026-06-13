@@ -513,6 +513,7 @@ impl SearchEngine {
 
         // 1. Tier 2 surrogate: propose mutations. Region focus (if any) rides
         // along in the hypothesis text — no trait churn, surrogate-agnostic.
+        let prep_t = std::time::Instant::now();
         let nearby = reachable_notables(&seed_xml, &self.tree_db);
         let notables_block = format_notables_block(&nearby);
         let (unique_picks, uniques_block) = equippable_uniques(&seed_xml, &self.unique_db);
@@ -731,11 +732,19 @@ impl SearchEngine {
             .iter()
             .map(|p| (p.variant_id.clone(), p.pob_xml.clone()))
             .collect();
+        let batch_n = batch.len();
+        let score_t = std::time::Instant::now();
         let scored = self
             .judge
             .score(batch)
             .await
             .map_err(|e| CoreError::Judge(e.to_string()))?;
+        tracing::info!(
+            batch = batch_n,
+            score_ms = score_t.elapsed().as_millis() as u64,
+            prep_ms = prep_t.elapsed().as_millis().saturating_sub(score_t.elapsed().as_millis()) as u64,
+            "PERF: tier-3 batch scored"
+        );
 
         // 5. Place survivors that scored OK into the archive
         let proposal_by_id: HashMap<String, MutationProposal> = survivors

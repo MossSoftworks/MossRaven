@@ -1614,19 +1614,39 @@ impl PobHeadless {
         Ok(result)
     }
 
-    /// Run a closure with CWD set to the PoB `src/` directory,
-    /// restoring the original CWD afterwards.
+    /// Run a closure with CWD at the PoB `src/` directory.
+    ///
+    /// CWD is process-global, and the original design took a global lock for
+    /// the WHOLE calc + restored CWD afterwards — which serialized every score
+    /// across the worker pool (an 11-worker pool ran like 1: each calc held the
+    /// lock ~1.4 s, so 10 builds took ~14 s instead of ~1.5 s).
+    ///
+    /// Fix: PIN the CWD to `src/` once (under the lock, race-safe) and never
+    /// restore it. After that, CWD is read-only shared state that every VM
+    /// agrees on, so the calc runs **lock-free and concurrently**. Pinning also
+    /// removes the race the lock guarded — nobody yanks CWD mid-calc anymore.
+    /// Safe because the service resolves all its own paths (corpus, archive,
+    /// data dir) to absolutes at startup and does no CWD-relative I/O after.
     fn with_pob_cwd<F, R>(&self, f: F) -> Result<R, PobError>
     where
         F: FnOnce(&Lua) -> LuaResult<R>,
     {
-        let _guard = pob_cwd_lock();
         let pob_src = self.pob_src_path.as_ref().ok_or(PobError::NotInitialized)?;
-        let original_cwd = std::env::current_dir()?;
-        std::env::set_current_dir(pob_src)?;
-        let result = f(&self.lua);
-        std::env::set_current_dir(original_cwd)?;
-        Ok(result?)
+        // Fast path: CWD already pinned to src/ → run concurrently, no lock.
+        // Use an atomic flag, NOT a path comparison: on Windows current_dir()
+        // canonicalizes (casing, \\?\ prefix) so it may never string-equal the
+        // pob_src PathBuf even right after set_current_dir — which would keep
+        // every score on the slow locked path (still serial).
+        if CWD_PINNED.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(f(&self.lua)?);
+        }
+        // Slow path (first call only): pin CWD to src/ and DON'T restore.
+        let _guard = pob_cwd_lock();
+        if !CWD_PINNED.load(std::sync::atomic::Ordering::Acquire) {
+            std::env::set_current_dir(pob_src)?;
+            CWD_PINNED.store(true, std::sync::atomic::Ordering::Release);
+        }
+        Ok(f(&self.lua)?)
     }
 }
 
@@ -1648,6 +1668,10 @@ impl Default for PobHeadless {
 /// loads modules by relative path mid-calculation. De-serializing the pool
 /// means absolute package.path instead of chdir; tracked as a follow-up
 /// (default pool size is 1).
+/// Set once the process CWD has been pinned to PoB's `src/` (see
+/// `with_pob_cwd`). After this, scoring runs lock-free and concurrent.
+static CWD_PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn pob_cwd_lock() -> std::sync::MutexGuard<'static, ()> {
     static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner())
