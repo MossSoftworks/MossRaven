@@ -28,6 +28,14 @@ try {
         if ($v) { Set-Item "env:$k" $v }
     }
 
+    # MULTI-THREADED scoring: one PoB Lua VM per worker, judged concurrently.
+    # Use all but one core (the service clamps to cores-1, max 16). Each worker
+    # is ~150 MB RAM. This is the single biggest corpus-throughput lever.
+    $cores = [Environment]::ProcessorCount
+    $pool = [Math]::Max(2, $cores - 1)
+    $env:MOSSRAVEN_POOL_SIZE = "$pool"
+    Write-Output ("multi-threaded churn: {0} scoring workers ({1} cores detected)" -f $pool, $cores)
+
     $cycle = 0
     while ($true) {
         if (Test-Path $sentinel) { Write-Output "STOP-CHURN sentinel found - exiting."; break }

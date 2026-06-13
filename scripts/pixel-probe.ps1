@@ -7,6 +7,28 @@
 param([string]$OutDir = "C:\#AppProjects\MossRaven\scratch\shots")
 
 New-Item -ItemType Directory -Force $OutDir | Out-Null
+
+# CRITICAL: PrintWindow CANNOT reliably capture PoB's cross-process OpenGL
+# child window (returns white/blank unpredictably — it showed the tree one run
+# and white the next on the same working state). The ONLY reliable render check
+# is the full-screen BitBlt (screen.png) with MossRaven in the FOREGROUND so
+# the embedded GL content is actually composited to the screen. Foreground it
+# here before capture; read screen.png (not the per-window PNGs) to judge render.
+try {
+    Add-Type -TypeDefinition @"
+using System;using System.Runtime.InteropServices;
+public static class FgProbe {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+}
+"@ -ErrorAction SilentlyContinue
+    $mr = Get-Process MossRaven -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($mr -and $mr.MainWindowHandle -ne 0) {
+        [FgProbe]::ShowWindow($mr.MainWindowHandle, 9) | Out-Null   # SW_RESTORE
+        [FgProbe]::SetForegroundWindow($mr.MainWindowHandle) | Out-Null
+        Start-Sleep -Milliseconds 700
+    }
+} catch {}
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
 using System;
 using System.Collections.Generic;

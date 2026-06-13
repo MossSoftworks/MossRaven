@@ -40,6 +40,8 @@ public sealed class PobEmbedHost : HwndHost
     // PoB windows alive BEFORE our launch (the user's own session) — never
     // steal these via the title fallback.
     private readonly HashSet<IntPtr> _preexisting = new();
+    private uint _uiThreadId;   // WPF UI thread, captured in BuildWindowCore
+    private uint _attachedTid;  // PoB thread we've AttachThreadInput'd to
 
     public PobEmbedHost(string exePath, Action<string> log)
     {
@@ -51,6 +53,7 @@ public sealed class PobEmbedHost : HwndHost
 
     protected override HandleRef BuildWindowCore(HandleRef hwndParent)
     {
+        _uiThreadId = GetCurrentThreadId();
         var host = CreateWindowEx(
             0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
@@ -91,7 +94,10 @@ public sealed class PobEmbedHost : HwndHost
             // and parenting that mid-boot freezes the UI thread.
             for (int i = 0; i < 360 && _child == IntPtr.Zero; i++)
             {
-                await Task.Delay(i < 180 ? 16 : 150);
+                // Poll very fast at the start so the boot console is hidden
+                // within a few ms of being shown — before it can paint a white
+                // frame on the desktop.
+                await Task.Delay(i < 120 ? 4 : 150);
                 HideConsoleWindows();          // keep the boot console off-screen
                 var cand = FindAppSizedWindow();
                 if (cand != IntPtr.Zero)
@@ -204,6 +210,12 @@ public sealed class PobEmbedHost : HwndHost
     {
         try
         {
+            if (_attachedTid != 0 && _uiThreadId != 0)
+                AttachThreadInput(_uiThreadId, _attachedTid, false);
+        }
+        catch { }
+        try
+        {
             if (_proc is { HasExited: false })
                 _proc.Kill(entireProcessTree: true);
         }
@@ -227,6 +239,19 @@ public sealed class PobEmbedHost : HwndHost
         SetWindowPos(_child, IntPtr.Zero, 0, 0, 0, 0,
             SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         ShowWindowAsync(_child, SW_SHOWNA);
+        // Attach the WPF UI thread's input queue to PoB's thread. SetParent
+        // alone leaves the child's input detached — clicks need TWO presses
+        // (activate, then register) and PoB throttles render while it thinks
+        // it's unfocused. With inputs attached, clicks land first-press and
+        // PoB sees itself active (live render). Validated render-safe via the
+        // screen-BitBlt probe (PrintWindow can't capture this GL child).
+        var pobTid = GetWindowThreadProcessId(_child, out _);
+        if (pobTid != 0 && _uiThreadId != 0 && _attachedTid != pobTid)
+        {
+            if (_attachedTid != 0) AttachThreadInput(_uiThreadId, _attachedTid, false);
+            AttachThreadInput(_uiThreadId, pobTid, true);
+            _attachedTid = pobTid;
+        }
         Dispatcher.BeginInvoke(ResizeChild);
     }
 
@@ -276,6 +301,10 @@ public sealed class PobEmbedHost : HwndHost
             if (wpid != pid) return true;
             if (!IsWindowVisible(hwnd) || GetParent(hwnd) != IntPtr.Zero) return true;
             if (IsAppSized(hwnd)) return true; // never hide the GUI
+            // Shove off-screen AND hide: the SetWindowPos lands even if the
+            // async hide lags a frame, so no white console frame on the desktop.
+            SetWindowPos(hwnd, IntPtr.Zero, -32000, -32000, 0, 0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
             ShowWindowAsync(hwnd, SW_HIDE);
             if (_hiddenByUs.Add(hwnd))
                 _log($"[pob-embed] boot console hidden: {Describe(hwnd)}");
@@ -373,6 +402,8 @@ public sealed class PobEmbedHost : HwndHost
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
     [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr hwnd, int cmd);
     [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }
 

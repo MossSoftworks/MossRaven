@@ -191,7 +191,7 @@ public partial class MainWindow : Window
         // Refresh always returns to the live archive view.
         FinalistHistoryScroller.Visibility = Visibility.Collapsed;
         BuildList.Visibility = Visibility.Visible;
-        FinalistHistoryButton.Content = "Builds";
+        FinalistHistoryButton.Content = "History";
         await RefreshArchiveAsync();
     }
 
@@ -212,14 +212,14 @@ public partial class MainWindow : Window
         {
             FinalistHistoryScroller.Visibility = Visibility.Collapsed;
             BuildList.Visibility = Visibility.Visible;
-            FinalistHistoryButton.Content = "Builds";
+            FinalistHistoryButton.Content = "History";
             BuildListHint.Text = "Click a build to copy its PoB import code to clipboard.";
             return;
         }
         LoadFinalistHistoryViaService();
         BuildList.Visibility = Visibility.Collapsed;
         FinalistHistoryScroller.Visibility = Visibility.Visible;
-        FinalistHistoryButton.Content = "Hide builds";
+        FinalistHistoryButton.Content = "Builds";
         BuildListHint.Text = "Click a build to load it live in PoB (tree view) and open its full guide.";
     }
 

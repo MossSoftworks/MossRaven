@@ -602,8 +602,12 @@ async fn build_context(pob_path: &str) -> Context {
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(1);
             if pool_size > 1 {
+                // Allow up to (cores - 1) workers so corpus churn can saturate
+                // the machine (each worker is a full PoB Lua VM, ~150 MB). The
+                // churn launcher requests ProcessorCount-1; interactive callers
+                // leave MOSSRAVEN_POOL_SIZE unset (single worker, fast startup).
                 let cap = std::thread::available_parallelism()
-                    .map(|n| (n.get() / 2).clamp(1, 8))
+                    .map(|n| n.get().saturating_sub(1).clamp(1, 16))
                     .unwrap_or(1);
                 let n = pool_size.min(cap);
                 tracing::info!(
