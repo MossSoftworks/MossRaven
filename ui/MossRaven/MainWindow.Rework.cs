@@ -46,7 +46,7 @@ public partial class MainWindow
     private void InitRework()
     {
         BuildPrefCombos();
-        _opsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+        _opsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _opsTimer.Tick += (_, _) => RefreshOpsStatus();
         _opsTimer.Start();
         RefreshOpsStatus();
@@ -445,31 +445,66 @@ public partial class MainWindow
     }
 
     // ----- Ops box -----
-    private long _opsRows, _opsBytes;
+    private long _opsRows, _opsBytes, _lastOpsRows;
+    private DateTime _lastOpsAt = DateTime.MinValue;
 
     private async void RefreshOpsStatus()
     {
-        // Prefer the ENGINE's view (this UI process has been observed unable
-        // to enumerate the data dir in some launch contexts).
-        try
+        // Real-time row count: read the corpus file DIRECTLY (off the UI thread).
+        // Byte size is instant; we count exact lines while the file is small
+        // enough to be cheap, else estimate from a calibrated bytes/row. The
+        // service's view lags, so the local file is the live source.
+        (long rows, long bytes) = await System.Threading.Tasks.Task.Run(() =>
         {
-            var json = await _service.OpsStatusAsync();
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("corpus_rows", out var r))
-                _opsRows = r.GetInt64();
-            if (doc.RootElement.TryGetProperty("corpus_bytes", out var b))
-                _opsBytes = b.GetInt64();
+            try
+            {
+                var dir = Path.Combine(DataDir(), "corpus");
+                if (!Directory.Exists(dir)) return (0L, 0L);
+                var files = new DirectoryInfo(dir).GetFiles("evals-*.jsonl");
+                long b = files.Sum(f => f.Length);
+                long r = 0;
+                if (b < 25_000_000) // exact while cheap (~12k rows / 25 MB)
+                    foreach (var f in files)
+                    {
+                        using var sr = new StreamReader(f.FullName);
+                        while (sr.ReadLine() != null) r++;
+                    }
+                else if (_opsRows > 0 && _opsBytes > 0)
+                    r = (long)(b / Math.Max(1.0, (double)_opsBytes / _opsRows));
+                return (r, b);
+            }
+            catch { return (0L, 0L); }
+        });
+        if (rows == 0)
+        {
+            // Fallback to the engine's view when the local read found nothing.
+            try
+            {
+                var json = await _service.OpsStatusAsync();
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("corpus_rows", out var r)) rows = r.GetInt64();
+                if (doc.RootElement.TryGetProperty("corpus_bytes", out var bb)) bytes = bb.GetInt64();
+            }
+            catch { rows = _opsRows; bytes = _opsBytes; }
         }
-        catch { /* keep last known; fall through to local estimate */ }
+        if (rows > 0) { _opsRows = rows; _opsBytes = bytes; }
+
+        // Live rate (rows/sec since the last tick).
+        var now = DateTime.Now;
+        double rate = 0;
+        if (_lastOpsAt != DateTime.MinValue && rows >= _lastOpsRows)
+        {
+            var dt = (now - _lastOpsAt).TotalSeconds;
+            if (dt > 0.4) rate = (rows - _lastOpsRows) / dt;
+        }
+        _lastOpsRows = rows;
+        _lastOpsAt = now;
+
         try
         {
-            var corpusDir = Path.Combine(DataDir(), "corpus");
-            long bytes = _opsBytes;
-            if (bytes == 0 && Directory.Exists(corpusDir))
-                bytes = new DirectoryInfo(corpusDir).GetFiles("evals-*.jsonl").Sum(f => f.Length);
-            var rows = _opsRows > 0 ? _opsRows : bytes / 2000;
             var churnAlive = _churnProc is { HasExited: false };
-            OpsChurnStatus.Text = $"{(churnAlive ? "RUNNING" : "idle")} · ~{rows:N0} rows ({bytes / 1048576.0:N1} MB)";
+            var rateStr = churnAlive && rate > 0.05 ? $"  ·  +{rate:N1}/s" : "";
+            OpsChurnStatus.Text = $"{(churnAlive ? "RUNNING" : "idle")}  ·  {rows:N0} rows{rateStr}  ({bytes / 1048576.0:N1} MB)";
             OpsChurnButton.Content = churnAlive ? "Stop" : "Start";
 
             // Value model: report file next to repo root.
