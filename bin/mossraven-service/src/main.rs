@@ -125,6 +125,12 @@ fn parse_args() -> Args {
     out
 }
 
+// Per-thread allocator: the scoring pool runs ~N malloc-heavy Lua VMs on N
+// threads; the system allocator's global lock contention is a prime suspect
+// for the poor (~2.3x) pool scaling. mimalloc has per-thread heaps.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = parse_args();
