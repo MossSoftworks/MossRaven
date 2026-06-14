@@ -209,6 +209,16 @@ impl PobHeadless {
             ))
             .exec()?;
 
+        // Diagnostic (#96): is the JIT actually active? mlua's `luajit` feature
+        // links LuaJIT, but a broken MSVC build or a forced interpreter would
+        // change throughput 2-5x. Report it once at init so we stop guessing.
+        if let Ok(v) = self.lua.load(
+            "if not jit then return 'NOT LUAJIT (plain interpreter)' end \
+             return (jit.status() and 'LuaJIT JIT=ON ' or 'LuaJIT JIT=OFF ')..tostring(jit.version)"
+        ).eval::<String>() {
+            tracing::info!(lua_runtime = %v, "PoB Lua runtime");
+        }
+
         // Provide a minimal lua-utf8 stub since it's a C module we can't load in safe mode
         // This provides basic string operations that fall back to regular string functions
         self.lua

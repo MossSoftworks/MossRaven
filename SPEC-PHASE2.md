@@ -263,13 +263,14 @@ the already-built 10-box node farm** — cheap, linear, shipped. Three reasons G
 - It remains the only **fast-exact** quadrant (GNN = fast-approximate, CPU swarm = slow-exact) —
   a real moat *if* the corner ever binds. It just doesn't today.
 
-**The cheap wins #94 surfaced instead** (do these, not the port): **(1) restore LuaJIT** — the
-shipped binary runs **interpreted Lua** (pure-Lua bit polyfill, JIT not active), worth a plausible
-**2–5× across single AND pooled paths**, fix already codified in `scripts/patch-luajit-msvc.ps1`;
-**(2) give the VM more RAM** — the reference box is a RAM-starved QEMU guest (~0.6–1 GB free,
-~800 MB/VM), which is *why* parallel scaling is only ~2.3×, not the silicon; **(3) mimalloc** for
-the malloc-heavy VMs. LuaJIT alone cuts every fill-time figure ~3×. These beat a person-year CUDA
-port economically and are gated on nothing.
+**What #94 proposed as cheap wins, and what survived verification** (a cautionary tale — both
+headline "wins" were phantoms, caught by measuring before acting): LuaJIT-restore (claimed 2–5×)
+→ **already on** (`JIT=ON LuaJIT 2.1`); more-VM-RAM (claimed RAM-starved) → **7.4 GB free under the
+pool**, fine. Neither exists. The single-box ceiling (~2.3×) is the *hard* kind — allocator
+contention and/or memory bandwidth — leaving exactly one unverified single-box lever (**mimalloc**)
+and one real lever: **horizontal scaling** (the node farm + swarm). Per-box is ~3 builds/sec and
+won't climb much; you beat the GPU port not by speeding one box but by **adding boxes** — which
+the RemoteBackend node farm already supports.
 
 ---
 
@@ -372,11 +373,17 @@ Measured throughput (adversarial #94 benchmark, on the reference 12-vCPU box):
   heavy crit/projectile builds ~1000–1300 ms; pathological 96-skill ~2000 ms). **Calc depth per
   main skill dominates, not tree size.**
 - **Pooled (11 workers): ~3 builds/sec/box (330 ms/build), only ~2.3× over single-thread (~21%
-  efficiency).** The wall is **memory bandwidth + a RAM-starved QEMU guest** (~0.6–1 GB free),
-  *not* core count. Fixable ceiling ~5.5 builds/sec/box (~180 ms, ~4.2×); 11× is unreachable.
-- **THE shipped binary runs interpreted Lua, not LuaJIT** (pure-Lua bit polyfill; JIT inactive
-  despite the `luajit` Cargo feature — the known MSVC bootstrap fallback). **Restoring it is the
-  single highest-leverage throughput action — ~2–5× across the board** (`scripts/patch-luajit-msvc.ps1`).
+  efficiency).** Fixable ceiling maybe ~5 builds/sec/box; 11× is unreachable.
+- **TWO swarm "cheap win" claims were FALSIFIED by direct measurement (verify before acting):**
+  - *"Binary runs interpreted Lua → 2–5× from LuaJIT"* — **FALSE.** Runtime probe reports
+    `LuaJIT JIT=ON LuaJIT 2.1.ROLLING`. ~770 ms IS the LuaJIT number. The bit polyfill is an mlua
+    *safe-mode* artifact (C modules can't load sandboxed), not a JIT-off signal. No win here.
+  - *"RAM-starved QEMU guest (~0.6–1 GB free)"* — **FALSE.** Box has 15.9 GB total, **7.4 GB free
+    under the full 11-VM pool** (~4 GB used). Capacity is fine. No win from more RAM.
+- **So the ~2.3× ceiling is the HARD kind:** allocator contention (11 threads on one process
+  malloc → **mimalloc** is the one testable single-box lever, unverified) and/or memory bandwidth.
+  Per-box throughput is genuinely capped at single-digit builds/sec → **horizontal scaling
+  (the node farm / swarm) is the real lever**, not single-box tuning.
 - **GPU escape hatches:** the **GNN (§3, fast-approximate)** and the **GPU calc engine (§3.5,
   fast-exact)** — the latter is NO-GO at current scale (§3.5). The old "non-starter that breaks
   updates" line is retracted: it's buildable, just not economical yet.
