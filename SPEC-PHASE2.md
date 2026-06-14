@@ -271,6 +271,35 @@ contention and/or memory bandwidth — leaving exactly one unverified single-box
 and one real lever: **horizontal scaling** (the node farm + swarm). Per-box is ~3 builds/sec and
 won't climb much; you beat the GPU port not by speeding one box but by **adding boxes** — which
 the RemoteBackend node farm already supports.
+(Update: mimalloc tested → only ~5%, confirming bandwidth/vCPU-bound not allocator. The reference
+box is a cramped VM; the real **3× 9800X3D** cluster — 24 Zen5 cores + huge 3D-V-Cache L3 — should
+scale far better, since PoB's per-build working set likely fits in cache.)
+
+### Grounded GPU-calc feasibility (measured against real PoB source, 2026-06-14)
+
+Passion project, no commercial deadline → the question is "how hard," not "worth it." The
+architecture is **far more favorable than the 22K-line calc surface implies:**
+
+- **Calc surface:** ~22K lines (`CalcOffence` 6,061, `CalcDefence` 4,094, `CalcPerform` 3,410,
+  `CalcSections` 2,688, `CalcSetup` 1,952, `CalcActiveSkill` 1,067, `CalcTriggers` 1,369).
+- **But it all funnels through ONE tiny interface:** `Classes/ModStore.lua` — **924 lines**, ~20
+  query primitives (`Sum`/`More`/`Flag`/`Override`/`Max`/`EvalMod`…). The whole calc is *"aggregate
+  a flat modifier list with predicate filtering, in a fixed sequence"* — **exactly a GPU workload
+  (masked array reductions).**
+- **The 674KB `ModParser` (patch-heavy text→mod rules) STAYS ON CPU.** Parse a build once, extract
+  the **resolved flat mod list** (actor `modDB`), hand that array to the GPU. The GPU never parses.
+- **Effort, honest:** vertical slice (port `ModStore` core + one simple hit-skill `CalcOffence`
+  path, parity vs PoB) ≈ **2–4 weeks**; common path (hit+crit+basic ailments+defence, ~80% of
+  builds) ≈ **3–6 months**; full coverage ≈ person-years + per-league parity. A *long but
+  well-structured* port, not a tangle.
+
+**Vertical-slice PoC plan (#97):** (1) `dump_modlist` — serialize a loaded build's `modDB.list` +
+state flags to JSON (the GPU's input; build it first, look at it); (2) reimplement
+`ModStore:Sum/More/Flag/EvalMod` in Rust (CPU first); (3) port one simple skill's hit-damage core
+of `CalcOffence`; (4) parity-diff vs PoB on a fixture (#35/#45 harness); (5) GPU-ize the verified
+path (`cudarc`/`cust`), measure speedup. **Smarter alternative to spike:** *trace-and-specialize* —
+for a fixed build structure the calc is a fixed arithmetic DAG; trace one PoB run, JIT it to a
+kernel, run thousands of parameter variations on GPU without hand-porting the pipeline.
 
 ---
 
