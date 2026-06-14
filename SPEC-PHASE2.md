@@ -217,6 +217,47 @@ see the tree's graph structure or compositional gem synergies, so it "gives no v
 
 ---
 
+## 3.5 The GPU calc engine — "fast exact PoB" (Taylor's moonshot; the strongest moat)
+
+A real, buildable thing — and if built, something **no competitor has: an exact, GPU-fast,
+auto-data-updating PoB engine.** Distinct from the GNN (§3): the GNN *approximates* PoB; this
+*is* PoB's math, on the GPU.
+
+**The honest split** (because the fully-automatic version is a fantasy and we won't bet on it):
+
+| Half | Auto / "in moments"? | Reality |
+|---|---|---|
+| **Auto-transpile PoB's Lua → CUDA** | **NO** | Lua is dynamically typed, hash-table-heavy, branch-divergent — the opposite of GPU-friendly. A mechanical transpile won't compile or won't be fast. Drop this framing. |
+| **Auto-extract the DATA** (mods, tree, items, gems — what changes each patch) | **YES** | structured, scriptable; refresh on every PoB release "in moments." |
+| **Hand-port the CALC ENGINE** to CUDA kernels | **NO (effort, not auto)** | the real work, and it's worth it. |
+
+**The buildable engine:**
+- One warp per build; compile each build (on CPU, fast) into a **flat modifier array** (mod-type
+  enum, value, condition bitflags, tag bitmasks), then a CUDA kernel does the aggregation +
+  damage/defense pipeline as branchless arithmetic.
+- **Staged, and eventually 100% complete:** common damage/defense path first (~90% of builds),
+  then the special-mechanic long tail **incrementally**. *Everything PoB computes is portable* —
+  it's volume of work, not a wall (correction to an earlier mis-framing). CPU PoB is a *temporary*
+  fallback for not-yet-ported mechanics and a *permanent* parity verifier.
+- **Exact, 0-loss — guaranteed by the existing parity-test harness** (#35/#45): every kernel
+  diffed against PoB rule-for-rule. This is how "0 loss on the maths" is actually achieved — by
+  verification, not by magic.
+- **~100–1000× single-build.** Turns a 10⁷–10⁸-eval archive fill from **weeks/months → ~a day**,
+  and per-patch re-scoring of the whole archive from **days → minutes**.
+
+**Cost & gating:** person-months for the common path, person-years for full coverage, plus
+ongoing per-patch parity maintenance — the project's biggest technical bet. **The go/no-go is
+gated on the #94 benchmark.** Baseline already measured: **~770 ms/build single-thread, only
+~2.3× parallel scaling on 12 cores** (allocator/bandwidth contention). At those numbers a
+10⁸-eval fill + continuous re-scoring + a large user swarm make the GPU calc attractive; the
+CPU-swarm + NN-funnel may suffice for the first 10⁵–10⁶ archive. (#94 swarm running; numbers fold
+in on completion.)
+
+**Why it's the moat:** the GNN gives *fast-approximate*; the CPU swarm gives *slow-exact*; this
+gives **fast-exact**, the only quadrant nobody else occupies — and it auto-tracks PoB every patch.
+
+---
+
 ## 4. The swarm — distributed discovery, compute, and a shared brain
 
 **Goal (Taylor):** a central server coordinating all MossRaven clients across all users
@@ -288,12 +329,34 @@ Mandates:
 
 ---
 
+## 5.5 MossRaven-Explorer — the discoverer (product mode)
+
+The engine has **two complementary faces**, same infra, different intent:
+
+- **Census** (the Overseer, §5): *systematic* — fill the descriptor grid for coverage and
+  completeness. This is the **library**: reliable, browsable, "best build for every niche."
+- **Explorer:** *novelty-hunting* — a **full-time loop where the Tier-1 dreamer (Claude)
+  hypothesizes weird, off-grid builds** ("lightning werewolf that stacks block", "minion build
+  that scales off flask charges"), seeds them into guided search, and probes the **outlier corners
+  of the 10³⁰ space for moonshots** — builds no guide-writer would conceive. Raw volume has
+  diminishing returns out there, but the *hits* are exactly the novel/surprising builds that
+  differentiate MossRaven from a stats site.
+
+Product framing: **the library (Census) + the discoverer (Explorer)** are MossRaven's two faces —
+the Census makes it *complete*, the Explorer makes it *surprising*. The Explorer is a **mode, not
+new tech**: it reuses the dreamer + guided search + archive + swarm, just pointed at novelty and
+run continuously (an "enterprise that hypothesizes builds all day"). It pairs naturally with the
+swarm — idle client compute runs Explorer probes, the coordinator dedups discoveries globally.
+
+---
+
 ## 6. GPU utilization — "can we CUDA the loop?"
 
 Honest map of what is and isn't GPU-able:
-- **PoB scoring:** Lua/CPU. *Not* GPU-able without rewriting PoB's calc engine (a
-  non-starter; breaks updates). The GNN is the escape hatch — it *is* the GPU path that
-  eventually replaces most PoB calls.
+- **PoB scoring on CPU:** Lua, ~770 ms/build, scales only ~2.3× across 12 cores today. Two GPU
+  escape hatches: the **GNN (§3, fast-approximate)** and the **GPU calc engine (§3.5, fast-exact
+  — the real moonshot)**. The old claim that GPU PoB is a "non-starter that breaks updates" is
+  wrong and retracted: it's a buildable hand-port whose *data* auto-tracks each patch (§3.5).
 - **Proposer:** **yes** — local Ollama runs on CUDA today (`OLLAMA_MODEL`).
 - **Value model:** **yes** — GNN training + inference on CUDA (the main GPU workload).
 - The user has multi-GPU (2×5070 + 3070): natural split — Ollama on one, GNN
