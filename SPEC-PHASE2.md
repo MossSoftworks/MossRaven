@@ -77,6 +77,57 @@ GNN lets us map it affordably and keep it current, and the Librarian answers pla
 the map.** The GNN earns its place by making a near-complete, always-fresh Atlas
 *possible* — not by being the thing players query.
 
+## 0.6 How big is the build space? — adversarially verified (2026-06-13)
+
+Five independent methods, each torn into by an adversary agent, then reconciled (11-agent
+run, ~750K tokens, all reading the real `TreeData/0_5/tree.json`). The numbers:
+
+- **Definition of "a build"** (the one all five reviews converged on): its **set of allocated
+  notables + keystones**, counted *iff* connected-and-affordable — some connected subgraph
+  from a class start grabs exactly those within the ~110-point budget (100–123). The **57% of
+  nodes that are degree-2 travel are fungible** — they gate connectivity, they are not identity.
+- **Distinct meaningful builds: ~10³⁰** (defensible band **10²⁶–10³⁸**). This is the
+  load-bearing number; it was reproduced by a second, different method (connected-k-subgraph
+  count on the notable-adjacency graph).
+- **Raw connected node-allocations: ~10⁶⁹–10⁷⁶** — quoted only as context; those differ
+  mostly by interchangeable travel paths, so they are *not* "different builds."
+- Free-choice ceiling C(984,~40) ≈ 10⁴⁵⁺ — rejected (ignores the binding connectivity
+  constraint).
+- **Real tree facts (0.5):** 4,483 skill nodes, 984 notables, 33 keystones; **6 start nodes,
+  each shared by 2 classes** (44683/47175/50459/50986/54447/61525); avg degree 2.41, max 9; a
+  greedy build grabs ~38 / 42 / 46 notables at 100 / 110 / 123 points.
+- **Killed methods (kept as negative results):** empirical capture-recapture sampling (every
+  unseen-species estimator only recovers the *sampler's own* ~10⁵ support — 20+ OOM below
+  truth); homogeneous analytic growth-constant bounds (broken derivation; band too wide to
+  constrain).
+
+**The verdict — and it is unanimous:** exhaustive enumeration is impossible by **20+ orders of
+magnitude**, and no compute pool closes the gap — a 512-core full-calc farm scores ~10⁹·⁴
+builds/week vs. a 10³⁰ space. **So the Atlas does NOT catalog builds.** It:
+
+1. **Enumerates only the low-cardinality DESCRIPTOR grid** — ascendancy (22) × main-skill
+   (~120) × damage-type (7) × defence-archetype (6) × life-band (5) × dps-band (6) ≈
+   **3.3M behavior cells** (the part that *is* enumerable).
+2. **Guided-searches** (MAP-Elites / quality-diversity) the 10³⁰ build space to find the best
+   occupant of each cell.
+
+- **Tractable target = a de-duplicated ELITE ARCHIVE of ~10⁵–10⁶ occupied cells** (~5×10⁵ at
+  the fine descriptor with ~15% feasible occupancy; ~1.1×10⁵ for a coarse browsable grid).
+  *Not* a catalog of distinct trees.
+- **Fill cost is modest:** ~100–1000 full-calc evals per filled cell ⇒ ~5×10⁷–5×10⁸ evals ⇒
+  a fraction of one node-farm-week, gated behind the surrogate funnel (surrogate ranks
+  ~10⁹–10¹¹ candidates; full PoB-equivalent calc scores only the ~10⁷–10⁸ that look elite).
+- **The binding real-world constraint is full-calc throughput** (the still-unbenchmarked
+  ~50–150 ms/build PoB cost), **NOT the size of the space.** This is exactly why "how many
+  builds are there" is the wrong question and "how big is the archive" is the right one.
+
+**This vindicates MossRaven's existing MAP-Elites architecture.** The first-principles math
+returns the engine we already have: an enumerable descriptor grid, a searched 10³⁰ build space,
+a surrogate funnel, an elite archive as the product. The open refinements it implies:
+(a) make the archive's cell axes the **measured descriptor grid** above (asc × skill × damage ×
+defence × life-band × dps-band) rather than ad-hoc coords; (b) **benchmark PoB's real
+per-build calc time** — it is now the one number that bounds the whole project.
+
 ## 1. Carry-forward from Phase 1 (do not lose)
 
 The 7-tier pipeline stays the spine:
