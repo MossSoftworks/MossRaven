@@ -245,16 +245,31 @@ auto-data-updating PoB engine.** Distinct from the GNN (§3): the GNN *approxima
 - **~100–1000× single-build.** Turns a 10⁷–10⁸-eval archive fill from **weeks/months → ~a day**,
   and per-patch re-scoring of the whole archive from **days → minutes**.
 
-**Cost & gating:** person-months for the common path, person-years for full coverage, plus
-ongoing per-patch parity maintenance — the project's biggest technical bet. **The go/no-go is
-gated on the #94 benchmark.** Baseline already measured: **~770 ms/build single-thread, only
-~2.3× parallel scaling on 12 cores** (allocator/bandwidth contention). At those numbers a
-10⁸-eval fill + continuous re-scoring + a large user swarm make the GPU calc attractive; the
-CPU-swarm + NN-funnel may suffice for the first 10⁵–10⁶ archive. (#94 swarm running; numbers fold
-in on completion.)
+**VERDICT (adversarial #94 benchmark, 9-agent run): NO-GO at current scale.** The CPU-swarm +
+NN-surrogate funnel clears the realistic ~10⁷-eval budget in **~38 box-days on one box, ~4 days on
+the already-built 10-box node farm** — cheap, linear, shipped. Three reasons GO stays off:
+1. **PoB is always the exact gatekeeper.** Archive *placement* is exact no matter how the
+   surrogate ranks, so "GPU-exact vs NN-approximate" is a **false tradeoff** — the GPU buys no
+   extra correctness, only speed on a budget the swarm already covers.
+2. **Amdahl trap:** each score re-runs the **CPU-side XML parse + Build:Init**, not just the calc.
+   A calc-only CUDA kernel is capped at **~1.4–1.7× end-to-end** unless the *parser* is co-ported
+   too — a much bigger job.
+3. **Per-league parity tax:** GGG ships tree/mod/base changes every league → recurring
+   verification cost forever.
+- **It flips to GO only in a narrow corner:** ≥10⁸ exact evals that must finish on a *single
+  box* (no horizontal scaling) within ~30 days → needs **<26 ms/build (~12× today's pool)**, a
+  rate CPU provably can't hit, *and* the parser co-ported. Below that, or anywhere boxes can be
+  added, CPU-swarm wins. **Shelved as a named moonshot, not the path.**
+- It remains the only **fast-exact** quadrant (GNN = fast-approximate, CPU swarm = slow-exact) —
+  a real moat *if* the corner ever binds. It just doesn't today.
 
-**Why it's the moat:** the GNN gives *fast-approximate*; the CPU swarm gives *slow-exact*; this
-gives **fast-exact**, the only quadrant nobody else occupies — and it auto-tracks PoB every patch.
+**The cheap wins #94 surfaced instead** (do these, not the port): **(1) restore LuaJIT** — the
+shipped binary runs **interpreted Lua** (pure-Lua bit polyfill, JIT not active), worth a plausible
+**2–5× across single AND pooled paths**, fix already codified in `scripts/patch-luajit-msvc.ps1`;
+**(2) give the VM more RAM** — the reference box is a RAM-starved QEMU guest (~0.6–1 GB free,
+~800 MB/VM), which is *why* parallel scaling is only ~2.3×, not the silicon; **(3) mimalloc** for
+the malloc-heavy VMs. LuaJIT alone cuts every fill-time figure ~3×. These beat a person-year CUDA
+port economically and are gated on nothing.
 
 ---
 
@@ -352,11 +367,19 @@ swarm — idle client compute runs Explorer probes, the coordinator dedups disco
 
 ## 6. GPU utilization — "can we CUDA the loop?"
 
-Honest map of what is and isn't GPU-able:
-- **PoB scoring on CPU:** Lua, ~770 ms/build, scales only ~2.3× across 12 cores today. Two GPU
-  escape hatches: the **GNN (§3, fast-approximate)** and the **GPU calc engine (§3.5, fast-exact
-  — the real moonshot)**. The old claim that GPU PoB is a "non-starter that breaks updates" is
-  wrong and retracted: it's a buildable hand-port whose *data* auto-tracks each patch (§3.5).
+Measured throughput (adversarial #94 benchmark, on the reference 12-vCPU box):
+- **Single-build calc: ~770 ms** for the real mutated workload (fixtures floor ~390–420 ms p50;
+  heavy crit/projectile builds ~1000–1300 ms; pathological 96-skill ~2000 ms). **Calc depth per
+  main skill dominates, not tree size.**
+- **Pooled (11 workers): ~3 builds/sec/box (330 ms/build), only ~2.3× over single-thread (~21%
+  efficiency).** The wall is **memory bandwidth + a RAM-starved QEMU guest** (~0.6–1 GB free),
+  *not* core count. Fixable ceiling ~5.5 builds/sec/box (~180 ms, ~4.2×); 11× is unreachable.
+- **THE shipped binary runs interpreted Lua, not LuaJIT** (pure-Lua bit polyfill; JIT inactive
+  despite the `luajit` Cargo feature — the known MSVC bootstrap fallback). **Restoring it is the
+  single highest-leverage throughput action — ~2–5× across the board** (`scripts/patch-luajit-msvc.ps1`).
+- **GPU escape hatches:** the **GNN (§3, fast-approximate)** and the **GPU calc engine (§3.5,
+  fast-exact)** — the latter is NO-GO at current scale (§3.5). The old "non-starter that breaks
+  updates" line is retracted: it's buildable, just not economical yet.
 - **Proposer:** **yes** — local Ollama runs on CUDA today (`OLLAMA_MODEL`).
 - **Value model:** **yes** — GNN training + inference on CUDA (the main GPU workload).
 - The user has multi-GPU (2×5070 + 3070): natural split — Ollama on one, GNN
